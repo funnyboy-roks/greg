@@ -5,6 +5,17 @@ void _exit_(void) {
     );
 }
 
+void print(char *str) {
+    asm(
+        "add $a0, %0\n"
+        "li $v0, 4\n"
+        "syscall"
+        :
+        : "r"(str)
+        : "a0", "$v0"
+    );
+}
+
 // void print(char *str) {
 //     asm(
 //         "add $a0, %0\n"
@@ -18,10 +29,31 @@ void _exit_(void) {
 
 typedef unsigned int size_t;
 
-void print_int(unsigned int n) {
+void syscall0(size_t number) {
+    asm(
+        "move $v0, %0"
+        "syscall"
+        :
+        : "r"(n)
+        :
+    );
 }
 
-void syscall1(size_t number, int arg1);
+void syscall1(size_t number, size_t arg1) {
+    asm(
+        "move $a0, %0"
+        "move $v0, %1"
+        "syscall"
+        :
+        : "r"(n), "r"(arg1)
+        :
+    );
+}
+
+void print_int(unsigned int n) {
+    syscall1(1, (size_t)n);
+}
+
 
 void __start(void)
 {
@@ -37,8 +69,10 @@ void __start(void)
     //     : "r"(x)
     //     : "$2", "$4"
     // );
-    syscall1(1, x);
-    _exit_();
+    // syscall1(1, x);
+    // syscall1(11, '\n');
+    print_int(x + 34);
+    syscall0(10);
     // 1 + 2;
     // print("hello");
     // exit();

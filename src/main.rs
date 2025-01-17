@@ -68,24 +68,6 @@ impl Iterator for Foo<'_> {
     }
 }
 
-// data
-// str:  .asciiz "\nHello World!\n"
-// .text
-// .globl main
-// main:
-//   li $t0, 30
-//   li $t1, 20
-//   add $a0, $t0, $t1
-//   li $v0, 1
-//   syscall
-//
-//   la $a0, str
-//   li $v0, 4
-//   syscall
-//
-//   # Nicely end the program
-//   li $v0, 0
-//   jr $ra
 fn pause() {
     if option_env!("DEBUG").is_some() {
         std::io::stdin().lock().lines().next();
@@ -217,6 +199,7 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
         eprintln!();
         // dbg!(&greg, &freg, off);
         // dbg!(foo.pc);
+        dbg!(greg[A0], greg[V0]);
         match bar.op() {
             0x08 => {
                 eprintln!("addi");
@@ -294,12 +277,8 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
             0x00 if bar.func() == 0x08 => {
                 eprintln!("jr");
                 let rs = bar.rs();
-                let rt = bar.rt();
-                let rd = bar.rd();
-                let shift = bar.shift();
-                // $d = $t << a
-                foo.pc = rs as usize;
-                dbg!(rs, rt, shift);
+                foo.pc = greg[rs] as usize;
+                dbg!(rs);
             }
             0x23 => {
                 eprintln!("lw");
@@ -307,8 +286,13 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
                 let rt = bar.rt();
                 let imm = bar.imm();
                 // $t = MEM [$s + i]:4
-                greg[rt] =
-                    u32::from_le_bytes(mem[rs as usize + imm as usize..][..4].try_into().unwrap());
+                dbg!(greg[rt]);
+                greg[rt] = u32::from_le_bytes(
+                    mem[greg[rs] as usize + imm as usize..][..4]
+                        .try_into()
+                        .unwrap(),
+                );
+                dbg!(greg[rt]);
                 dbg!(rs, rt, imm);
             }
             0x0f => {
@@ -345,8 +329,46 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
                 let rt = bar.rt();
                 let imm = bar.imm();
                 dbg!(rs, rt, imm);
-                mem[(rs as usize + imm as usize)..][..4]
-                    .copy_from_slice(&(rt as u32).to_le_bytes());
+                mem[(greg[rs] as usize + imm as usize)..][..4]
+                    .copy_from_slice(&(greg[rt] as u32).to_le_bytes());
+                dbg!(&mem[(greg[rs] as usize + imm as usize)..][..4]);
+            }
+            0x28 => {
+                eprintln!("sb");
+                // MEM [$s + i]:1 = LB ($t)
+                let rs = bar.rs();
+                let rt = bar.rt();
+                let imm = bar.imm();
+                dbg!(rs, rt, imm);
+                mem[rs as usize + imm as usize] = rt as u8;
+            }
+            0x30 => {
+                eprintln!("ll");
+                // $rt = MEM[$base+$offset]
+                let rs = bar.rs();
+                let rt = bar.rt();
+                let imm = bar.imm();
+                dbg!(rt, rs, imm);
+                greg[rt] = mem[greg[rs] as usize + imm as usize] as u32;
+            }
+            0x31 => {
+                eprintln!("[NYI] lwci");
+                // $ft = memory[base+offset]
+                let rs = bar.rs();
+                let rt = bar.rt();
+                let imm = bar.imm();
+                dbg!(rt, rs, imm);
+                // greg[rt] = mem[greg[rs] as usize + imm as usize] as u32;
+            }
+            0x00 if bar.func() == 0x24 => {
+                eprintln!("and");
+                // $d = $s & $t
+                let rd = bar.rs();
+                let rs = bar.rs() as u32;
+                let rt = bar.rt() as u32;
+                dbg!(rd, rs, rt);
+                greg[rd] = rs & rt;
+                // mem[rs as usize + imm as usize] = rt as u8;
             }
             0x05 => {
                 eprintln!("bne");
@@ -372,7 +394,8 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
                 eprintln!("CACHE OP {}", bar.rt());
             }
             op => todo!(
-                "op = 0x{:02x} (0b{:06b}), func = 0x{:02x} (0b{:06b})",
+                "full = 0b{:032b}, op = 0x{:02x} (0b{:06b}), func = 0x{:02x} (0b{:06b})",
+                bar.0,
                 op,
                 op,
                 bar.func(),
