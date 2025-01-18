@@ -190,7 +190,8 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
         pc: entry_point,
     };
 
-    let mut mem = [0u8; 1 * 1024 * 1024];
+    // TODO: Read ELF to determine how much memory is needed or something, idrk
+    let mut mem = [0u8; 4 * 1024 * 1024];
 
     let mut greg: Greg = Default::default();
     // let mut freg = [0f32; 32];
@@ -329,6 +330,7 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
                 let rt = bar.rt();
                 let imm = bar.imm();
                 dbg!(rs, rt, imm);
+                // println!("sw [0x{:08x}]", greg[rs] as usize + imm as usize);
                 mem[(greg[rs] as usize + imm as usize)..][..4]
                     .copy_from_slice(&(greg[rt] as u32).to_le_bytes());
                 dbg!(&mem[(greg[rs] as usize + imm as usize)..][..4]);
@@ -385,13 +387,34 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
             }
             0x38 => {
                 eprintln!("sc");
+                // if atomic_update then memory[base+offset] ← rt, rt ← 1 else rt ← 0
                 let rs = bar.rs();
                 let rt = bar.rt();
-                let imm = bar.imm() as i16;
-                greg[rt] = 0;
+                let imm = bar.imm() as i32;
+                mem[(greg[rs] as i32 + imm) as usize] = greg[rt] as u8;
+                greg[rt] = 1;
             }
             0x2f => {
                 eprintln!("CACHE OP {}", bar.rt());
+            }
+            0x04 => {
+                eprintln!("beq");
+                // if ($s == $t) pc += i << 2
+                let rs = bar.rs();
+                let rt = bar.rt();
+                let imm = (bar.imm() as i32) << 2;
+                if greg[rs] == greg[rt] {
+                    foo.pc = foo.pc.wrapping_add_signed(imm as isize);
+                }
+            }
+            0x0a => {
+                eprintln!("slti");
+                // $t = ($s < SE(i))
+                let rs = bar.rs();
+                let rt = bar.rt();
+                let imm = bar.imm() as i16 as i32;
+                greg[rt] = u32::from((greg[rs] as i32) < imm);
+                dbg!(rs, rt, imm, greg[rs]);
             }
             op => todo!(
                 "full = 0b{:032b}, op = 0x{:02x} (0b{:06b}), func = 0x{:02x} (0b{:06b})",
