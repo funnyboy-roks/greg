@@ -1,7 +1,7 @@
 CC=./mips32el--musl--stable-2024.05-1/bin/mipsel-buildroot-linux-musl-gcc
 
-foo: sys.s foo.c
-	$(CC) -nostdlib -o foo sys.s foo.c
+foo: syscall.c foo.c
+	$(CC) -nostdlib -o foo syscall.c foo.c
 
 $(CC): mips32-el.tar.xz
 	tar xf mips32-el.tar.xz
