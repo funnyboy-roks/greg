@@ -101,7 +101,7 @@ macro_rules! index {
 
 index!(Greg[usize, u64, u32, u16, u8]);
 
-fn syscall(data: &[u8], greg: &mut Greg) {
+fn syscall(data: &[u8], data_offset: usize, greg: &mut Greg) {
     match greg[V0] {
         0x01 => {
             eprintln!("{:02x?}", &greg.greg[..20]);
@@ -110,12 +110,13 @@ fn syscall(data: &[u8], greg: &mut Greg) {
         }
         0x04 => {
             eprintln!("[syscall] print string at 0x{:08x}", greg[A0]);
-            let cstr = CStr::from_bytes_until_nul(&data[greg[A0] as usize..]).unwrap();
+            let cstr =
+                CStr::from_bytes_until_nul(&data[greg[A0] as usize - data_offset..]).unwrap();
             print!("{}", cstr.to_str().unwrap());
         }
         0x0a => {
-            eprintln!("[syscall] exit");
-            process::exit(0);
+            eprintln!("[syscall] exit with code {:?}", greg[A0]);
+            process::exit(greg[A0] as i32);
         }
         0x0b => {
             let c = greg[A0] as u8 as char;
@@ -146,7 +147,7 @@ fn _main() {
         );
         process::exit(1);
     };
-    run(0, &text, &data)
+    run(0, &text, &data, 0)
 }
 
 fn main() {
@@ -173,17 +174,17 @@ fn main() {
 
     let empty = vec![];
     let data = if let Some(data) = elf.section_header_by_name(".rodata").unwrap() {
-        let (data, _) = elf.section_data(&data).unwrap();
-        data
+        let (bytes, _) = elf.section_data(&data).unwrap();
+        (bytes, data.sh_offset)
     } else {
-        &empty
+        (empty.as_slice(), 0)
     };
     dbg!(start);
     // let data = elf.section_data(&text).unwrap();
-    run(start, text, data);
+    run(start, text, data.0, data.1 as usize);
 }
 
-fn run(entry_point: usize, text: &[u8], data: &[u8]) {
+fn run(entry_point: usize, text: &[u8], data: &[u8], data_offset: usize) {
     dbg!(text.len());
     let mut foo = Foo {
         text: &text,
@@ -314,7 +315,7 @@ fn run(entry_point: usize, text: &[u8], data: &[u8]) {
             }
             0x00 if bar.func() == 0x0c => {
                 eprintln!("syscall");
-                syscall(&data, &mut greg);
+                syscall(&data, data_offset, &mut greg);
             }
             0x00 if bar.func() == 0x2a => {
                 eprintln!("slt");
