@@ -1,6 +1,8 @@
-foo
-foo.s
 hello
+fib
+fib-asm
+
 mips32-el.tar.xz
 mips32el--musl--stable-2024.05-1/
 bin/
+build/
