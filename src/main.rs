@@ -1,52 +1,16 @@
+pub mod inst;
 pub mod reg;
 
 use std::{
     ffi::CStr,
-    fs::{self, File},
-    io::{BufRead, BufReader},
+    fs::{self},
     ops::{Index, IndexMut},
     process,
 };
 
 use elf::endian::LittleEndian;
+use inst::{Func, Imm, Inst, InstKind, Opcode, Reg, Syscall};
 use reg::*;
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub struct Inst(u32);
-
-impl Inst {
-    pub fn op(self) -> u8 {
-        (self.0 >> 26) as u8
-    }
-
-    pub fn rs(self) -> u8 {
-        (self.0 >> 21) as u8 & 0b1_1111
-    }
-
-    pub fn rt(self) -> u8 {
-        (self.0 >> 16) as u8 & 0b1_1111
-    }
-
-    pub fn rd(self) -> u8 {
-        (self.0 >> 11) as u8 & 0b1_1111
-    }
-
-    pub fn shift(self) -> u8 {
-        (self.0 >> 6) as u8 & 0b1_1111
-    }
-
-    pub fn func(self) -> u8 {
-        self.0 as u8 & 0b11_1111
-    }
-
-    pub fn imm(self) -> u16 {
-        self.0 as u16 & 0xff_ff
-    }
-
-    pub fn address(self) -> u32 {
-        self.0 & !(0b11_1111u32 << 26u32)
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 struct Foo<'a> {
@@ -64,13 +28,18 @@ impl Iterator for Foo<'_> {
         assert!(self.pc < self.text.len());
         let bytes = &self.text[self.pc..][..4];
         self.pc += 4;
-        Some(Inst(u32::from_le_bytes(bytes.try_into().unwrap())))
-    }
-}
-
-fn pause() {
-    if option_env!("DEBUG").is_some() {
-        std::io::stdin().lock().lines().next();
+        let opcode = Opcode(u32::from_le_bytes(bytes.try_into().unwrap()));
+        let Some(inst) = Inst::new(opcode) else {
+            todo!(
+                "full = 0b{:032b}, op = 0x{:02x} (0b{:06b}), func = 0x{:02x} (0b{:06b})",
+                opcode.0,
+                opcode.op(),
+                opcode.op(),
+                opcode.func(),
+                opcode.func()
+            )
+        };
+        Some(inst)
     }
 }
 
@@ -102,32 +71,62 @@ macro_rules! index {
 index!(Greg[usize, u64, u32, u16, u8]);
 
 fn syscall(data: &[u8], data_offset: usize, greg: &mut Greg) {
-    match greg[V0] {
-        0x01 => {
-            eprintln!("{:02x?}", &greg.greg[..20]);
-            eprintln!("[syscall] print int {}", greg[A0]);
+    let syscall = Syscall::from(greg[V0]);
+    match syscall {
+        Syscall::PrintInteger => {
             print!("{}", greg[A0]);
         }
-        0x04 => {
+        Syscall::PrintFloat => todo!(),
+        Syscall::PrintDouble => todo!(),
+        Syscall::PrintString => {
             eprintln!("[syscall] print string at 0x{:08x}", greg[A0]);
             let cstr =
                 CStr::from_bytes_until_nul(&data[greg[A0] as usize - data_offset..]).unwrap();
             print!("{}", cstr.to_str().unwrap());
         }
-        0x0a => {
+        Syscall::ReadInteger => todo!(),
+        Syscall::ReadFloat => todo!(),
+        Syscall::ReadDouble => todo!(),
+        Syscall::ReadString => todo!(),
+        Syscall::Sbrk => todo!(),
+        Syscall::Exit => {
             eprintln!("[syscall] exit with code {:?}", greg[A0]);
             process::exit(greg[A0] as i32);
         }
-        0x0b => {
+        Syscall::PrintCharacter => {
             let c = greg[A0] as u8 as char;
-            eprintln!("[syscall] print char {:?}", c);
             print!("{}", c);
         }
-        0x22 => {
-            eprintln!("[syscall] print int hex");
+        Syscall::ReadCharacter => todo!(),
+        Syscall::OpenFile => todo!(),
+        Syscall::ReadFromFile => todo!(),
+        Syscall::WriteToFile => todo!(),
+        Syscall::CloseFile => todo!(),
+        Syscall::Exit2 => todo!(),
+        Syscall::Time => todo!(),
+        Syscall::MidiOut => todo!(),
+        Syscall::Sleep => todo!(),
+        Syscall::MidiOutSynchronous => todo!(),
+        Syscall::PrintHexInteger => {
             print!("0x{:08x}", greg[A0]);
         }
-        call => todo!("Unknown syscall 0x{:02x} ({})", call, call),
+        Syscall::PrintBinInteger => todo!(),
+        Syscall::PrintUnsignedInteger => todo!(),
+        Syscall::SetSeed => todo!(),
+        Syscall::RandomInt => todo!(),
+        Syscall::RandomIntRange => todo!(),
+        Syscall::RandomFloat => todo!(),
+        Syscall::RandomDouble => todo!(),
+        Syscall::ConfirmDialog => todo!(),
+        Syscall::InputDialogInt => todo!(),
+        Syscall::InputDialogFloat => todo!(),
+        Syscall::InputDialogDouble => todo!(),
+        Syscall::InputDialogString => todo!(),
+        Syscall::MessageDialog => todo!(),
+        Syscall::MessageDialogInt => todo!(),
+        Syscall::MessageDialogFloat => todo!(),
+        Syscall::MessageDialogDouble => todo!(),
+        Syscall::MessageDialogString => todo!(),
     }
 }
 
@@ -184,8 +183,76 @@ fn main() {
     run(start, text, data.0, data.1 as usize);
 }
 
+fn spec_op(greg: &mut Greg, inst: Inst, foo: &mut Foo, data: &[u8], data_offset: usize) -> bool {
+    let Some(func) = inst.func() else {
+        return false;
+    };
+
+    dbg!(func);
+    eprintln!(
+        "[{}:{}:{}] inst.reg() = {:?}",
+        file!(),
+        line!(),
+        column!(),
+        inst.reg()
+    ); // inlined dbg!() (ish)
+
+    let Reg {
+        rs, rt, rd, shift, ..
+    } = inst.reg();
+    match func {
+        Func::Sll => {
+            greg[rd] = greg[rt] << shift;
+        }
+        Func::Srl => todo!(),
+        Func::Sra => {
+            greg[rd] = greg[rt] >> shift;
+        }
+        Func::Sllv => todo!(),
+        Func::Srlv => todo!(),
+        Func::Srav => todo!(),
+        Func::Jr => {
+            foo.pc = greg[rs] as usize;
+        }
+        Func::Jalr => todo!(),
+        Func::Syscall => {
+            dbg!(greg[V0], greg[A0], greg[A1]);
+            syscall(&data, data_offset, greg);
+        }
+        Func::Mfhi => todo!(),
+        Func::Mthi => todo!(),
+        Func::Mflo => todo!(),
+        Func::Mtlo => todo!(),
+        Func::Mult => todo!(),
+        Func::MultU => todo!(),
+        Func::Div => todo!(),
+        Func::DivU => todo!(),
+        Func::Add => {
+            greg[rd] = greg[rs].wrapping_add_signed(greg[rt] as i32);
+        }
+        Func::Addu => {
+            greg[rd] = greg[rs].wrapping_add(greg[rt]);
+        }
+        Func::Sub => todo!(),
+        Func::Subu => todo!(),
+        Func::And => {
+            greg[rd] = rs as u32 & rt as u32;
+        }
+        Func::Or => {
+            greg[rd] = greg[rs] | greg[rt];
+        }
+        Func::Xor => todo!(),
+        Func::Nor => todo!(),
+        Func::Slt => {
+            greg[rd] = u32::from(bool::from(greg[rs as usize] < greg[rt as usize]));
+        }
+        Func::Sltu => todo!(),
+    }
+
+    true
+}
+
 fn run(entry_point: usize, text: &[u8], data: &[u8], data_offset: usize) {
-    dbg!(text.len());
     let mut foo = Foo {
         text: &text,
         pc: entry_point,
@@ -197,234 +264,108 @@ fn run(entry_point: usize, text: &[u8], data: &[u8], data_offset: usize) {
     let mut greg: Greg = Default::default();
     // let mut freg = [0f32; 32];
 
-    while let Some(bar) = foo.next() {
+    while let Some(inst) = foo.next() {
         eprintln!();
-        // dbg!(&greg, &freg, off);
-        // dbg!(foo.pc);
-        dbg!(greg[A0], greg[V0]);
-        match bar.op() {
-            0x08 => {
-                eprintln!("addi");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
-                greg[rt] = greg[rs].wrapping_add_signed(imm as i32);
-                dbg!(rs, rt, imm);
+        eprintln!("[{}:{}:{}] inst = {:?}", file!(), line!(), column!(), inst); // inlined dbg!() (ish)
+        match inst.kind {
+            InstKind::Special => {
+                if !spec_op(&mut greg, inst, &mut foo, data, data_offset) {
+                    todo!("Unknown op 0x{0:02x} (0b{0:06b})", inst.opcode.func());
+                }
             }
-            0x09 => {
-                eprintln!("addiu");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
-                dbg!(rs, rt, imm);
+            InstKind::AddI => {
+                let Imm { rs, rt, imm } = inst.imm();
+                greg[rt] = greg[rs].wrapping_add_signed(imm as i32);
+            }
+            InstKind::AddIU => {
+                let Imm { rs, rt, imm } = inst.imm();
                 greg[rt] = greg[rs] as u32 + i32::from(imm) as u32;
             }
-            0x00 if bar.func() == 0x21 => {
-                eprintln!("addu");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let rd = bar.rd();
-                let shift = bar.shift();
-                greg[rd] = greg[rs].wrapping_add(greg[rt]);
-                dbg!(rs, rt, shift);
-            }
-            0x00 if bar.func() == 0x20 => {
-                eprintln!("add");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let rd = bar.rd();
-                let shift = bar.shift();
-                greg[rd] = greg[rs].wrapping_add_signed(greg[rt] as i32);
-                dbg!(rs, rt, shift);
-            }
-            0x01 => {
-                eprintln!("bal");
-                let rs = bar.rs();
-                let imm = (bar.imm() as i16) << 2;
-                dbg!(rs, imm, foo.pc);
+            InstKind::Bal => {
+                let Imm { imm, .. } = inst.imm();
+                let imm = (imm as i16) << 2;
                 greg[RA] = foo.pc as u32 + 8;
                 foo.pc = foo.pc.wrapping_add_signed(imm as isize);
-                // greg[rd] = greg[rs] | greg[rt];
-                dbg!(rs, imm, foo.pc);
             }
-            0x00 if bar.func() == 0x25 => {
-                eprintln!("or (move?) {:08x}", bar.0);
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let rd = bar.rd();
-                let shift = bar.shift();
-                greg[rd] = greg[rs] | greg[rt];
-                dbg!(rs, rt, rd, shift);
-            }
-            0x00 if bar.func() == 0x03 => {
-                eprintln!("sra");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let rd = bar.rd();
-                let shift = bar.shift();
-                // $d = $t >> a
-                greg[rd] = greg[rt] >> shift;
-                dbg!(rs, rt, shift);
-            }
-            0x00 if bar.func() == 0x00 => {
-                eprintln!("sll");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let rd = bar.rd();
-                let shift = bar.shift();
-                // $d = $t << a
-                greg[rd] = greg[rt] << shift;
-                dbg!(rs, rt, shift);
-            }
-            0x00 if bar.func() == 0x08 => {
-                eprintln!("jr");
-                let rs = bar.rs();
-                foo.pc = greg[rs] as usize;
-                dbg!(rs);
-            }
-            0x23 => {
-                eprintln!("lw");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
-                // $t = MEM [$s + i]:4
-                dbg!(greg[rt]);
+            InstKind::LW => {
+                let Imm { rs, rt, imm } = inst.imm();
                 greg[rt] = u32::from_le_bytes(
                     mem[greg[rs] as usize + imm as usize..][..4]
                         .try_into()
                         .unwrap(),
                 );
-                dbg!(greg[rt]);
-                dbg!(rs, rt, imm);
             }
-            0x0f => {
-                eprintln!("lui");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
+            InstKind::LUI => {
+                let Imm { rt, imm, .. } = inst.imm();
                 greg[rt] = imm as u32;
-                dbg!(rs, rt, imm);
             }
-            0x0d => {
-                eprintln!("ori");
-                let rs = bar.rs();
-                let rt = bar.rt() as u32;
-                let imm = bar.imm() as u32;
-                greg[rs] = rt | imm;
-                dbg!(rs, rt, imm);
+            InstKind::OrI => {
+                let Imm { rs, rt, imm } = inst.imm();
+                greg[rs] = greg[rt] | imm as u32;
             }
-            0x00 if bar.func() == 0x0c => {
-                eprintln!("syscall");
-                syscall(&data, data_offset, &mut greg);
-            }
-            0x00 if bar.func() == 0x2a => {
-                eprintln!("slt");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let rd = bar.rd();
-                // $d = ($s < $t)
-                greg[rd] = u32::from(bool::from(greg[rs as usize] < greg[rt as usize]));
-            }
-            0x2b => {
-                eprintln!("sw");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
-                dbg!(rs, rt, imm);
-                // println!("sw [0x{:08x}]", greg[rs] as usize + imm as usize);
+            InstKind::SW => {
+                let Imm { rs, rt, imm } = inst.imm();
                 mem[(greg[rs] as usize + imm as usize)..][..4]
                     .copy_from_slice(&(greg[rt] as u32).to_le_bytes());
-                dbg!(&mem[(greg[rs] as usize + imm as usize)..][..4]);
             }
-            0x28 => {
-                eprintln!("sb");
+            InstKind::SB => {
                 // MEM [$s + i]:1 = LB ($t)
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
-                dbg!(rs, rt, imm);
+                let Imm { rs, rt, imm } = inst.imm();
                 mem[rs as usize + imm as usize] = rt as u8;
             }
-            0x30 => {
-                eprintln!("ll");
+            InstKind::LL => {
                 // $rt = MEM[$base+$offset]
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
-                dbg!(rt, rs, imm);
+                let Imm { rs, rt, imm } = inst.imm();
                 greg[rt] = mem[greg[rs] as usize + imm as usize] as u32;
             }
-            0x31 => {
+            InstKind::Lwci => {
                 eprintln!("[NYI] lwci");
                 // $ft = memory[base+offset]
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm();
+                let Imm { rs, rt, imm } = inst.imm();
                 dbg!(rt, rs, imm);
                 // greg[rt] = mem[greg[rs] as usize + imm as usize] as u32;
             }
-            0x00 if bar.func() == 0x24 => {
-                eprintln!("and");
-                // $d = $s & $t
-                let rd = bar.rs();
-                let rs = bar.rs() as u32;
-                let rt = bar.rt() as u32;
-                dbg!(rd, rs, rt);
-                greg[rd] = rs & rt;
-                // mem[rs as usize + imm as usize] = rt as u8;
-            }
-            0x05 => {
-                eprintln!("bne");
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm() as i16;
-                dbg!(rs, rt, imm);
-                dbg!(greg[rs], greg[rt]);
-                let imm = (imm << 2) as i32;
-                pause();
+            InstKind::Bne => {
+                let Imm { rs, rt, imm } = inst.imm();
+                let imm = (imm as i16 as i32) << 2;
                 if greg[rs] != greg[rt] {
                     foo.pc = foo.pc.wrapping_add_signed(imm as isize);
                 }
             }
-            0x38 => {
-                eprintln!("sc");
+            InstKind::Sc => {
                 // if atomic_update then memory[base+offset] ← rt, rt ← 1 else rt ← 0
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm() as i32;
-                mem[(greg[rs] as i32 + imm) as usize] = greg[rt] as u8;
+                let Imm { rs, rt, imm } = inst.imm();
+                mem[(greg[rs] as i32 + imm as i16 as i32) as usize] = greg[rt] as u8;
                 greg[rt] = 1;
             }
-            0x2f => {
-                eprintln!("CACHE OP {}", bar.rt());
+            InstKind::Cache => {
+                eprintln!("CACHE OP {}", inst.opcode.rt());
             }
-            0x04 => {
-                eprintln!("beq");
+            InstKind::Beq => {
                 // if ($s == $t) pc += i << 2
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = (bar.imm() as i32) << 2;
+                let Imm { rs, rt, imm } = inst.imm();
+                let imm = (imm as i16 as i32) << 2;
                 if greg[rs] == greg[rt] {
                     foo.pc = foo.pc.wrapping_add_signed(imm as isize);
                 }
             }
-            0x0a => {
-                eprintln!("slti");
+            InstKind::SltI => {
                 // $t = ($s < SE(i))
-                let rs = bar.rs();
-                let rt = bar.rt();
-                let imm = bar.imm() as i16 as i32;
+                let Imm { rs, rt, imm } = inst.imm();
+                let imm = imm as i16 as i32;
                 greg[rt] = u32::from((greg[rs] as i32) < imm);
-                dbg!(rs, rt, imm, greg[rs]);
             }
-            op => todo!(
-                "full = 0b{:032b}, op = 0x{:02x} (0b{:06b}), func = 0x{:02x} (0b{:06b})",
-                bar.0,
-                op,
-                op,
-                bar.func(),
-                bar.func()
-            ),
+            InstKind::J => todo!(),
+            InstKind::Jal => todo!(),
+            InstKind::Blez => todo!(),
+            InstKind::Bgtz => todo!(),
+            InstKind::SltIU => todo!(),
+            InstKind::AndI => todo!(),
+            InstKind::XorI => todo!(),
+            InstKind::Mfc0 => todo!(),
+            InstKind::LBU => todo!(),
+            InstKind::LHU => todo!(),
+            InstKind::SH => todo!(),
         }
     }
 }
