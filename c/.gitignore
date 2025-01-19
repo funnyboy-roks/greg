@@ -1,4 +1,6 @@
 foo
 foo.s
+hello
 mips32-el.tar.xz
 mips32el--musl--stable-2024.05-1/
+bin/
