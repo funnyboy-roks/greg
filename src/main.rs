@@ -2,14 +2,20 @@ pub mod inst;
 pub mod reg;
 
 use std::{
+    borrow::BorrowMut,
+    collections::HashMap,
     ffi::CStr,
-    fs::{self},
+    fs::{self, File},
+    io::Read,
     ops::{Index, IndexMut},
-    process,
+    os::fd::{AsFd, AsRawFd, FromRawFd},
+    process, thread,
+    time::{Duration, SystemTime},
 };
 
 use elf::endian::LittleEndian;
 use inst::{Func, Imm, Inst, InstKind, Opcode, Reg, Syscall};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use reg::*;
 
 impl Iterator for Greg<'_> {
@@ -37,12 +43,14 @@ impl Iterator for Greg<'_> {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Default, Debug)]
 struct Greg<'a> {
     reg: [u32; 32],
     file: &'a [u8],
     text: &'a [u8],
     pc: usize,
+    open_files: Vec<File>,
+    rngs: HashMap<u32, StdRng>,
 }
 
 macro_rules! index {
@@ -68,11 +76,18 @@ macro_rules! index {
 index!(Greg[usize, u64, u32, u16, u8]);
 
 impl Greg<'_> {
+    fn get_rng(&mut self, n: u32) -> &mut StdRng {
+        self.rngs
+            .entry(n)
+            .or_insert_with(|| StdRng::from_seed(Default::default()))
+            .borrow_mut()
+    }
+
     pub fn syscall(&mut self) {
         let syscall = Syscall::from(self[V0]);
         match syscall {
             Syscall::PrintInteger => {
-                print!("{}", self[A0]);
+                print!("{}", self[A0] as i32);
             }
             Syscall::PrintFloat => todo!(),
             Syscall::PrintDouble => todo!(),
@@ -81,39 +96,96 @@ impl Greg<'_> {
                 let cstr = CStr::from_bytes_until_nul(&self.file[self[A0] as usize..]).unwrap();
                 print!("{}", cstr.to_str().unwrap());
             }
-            Syscall::ReadInteger => todo!(),
+            Syscall::ReadInteger => {
+                let line = std::io::stdin().lines().next().unwrap().unwrap();
+                let n: u32 = line.parse().unwrap();
+                self[V0] = n;
+            }
             Syscall::ReadFloat => todo!(),
             Syscall::ReadDouble => todo!(),
-            Syscall::ReadString => todo!(),
+            Syscall::ReadString => {
+                // $a0 = address of input buffer
+                // $a1 = maximum number of characters to read
+                // TODO: need memory to exist first
+                // let addr = greg[A0]
+                // let file = unsafe { File::from_raw_fd(line.as_raw_fd()) };
+                // let buf = vec![0u8; ];
+                // file.read();
+                todo!()
+            }
             Syscall::Sbrk => todo!(),
             Syscall::Exit => {
-                eprintln!("[syscall] exit with code {:?}", self[A0]);
-                process::exit(self[A0] as i32);
+                eprintln!("[syscall] exit with code 0");
+                process::exit(0);
             }
             Syscall::PrintCharacter => {
                 let c = self[A0] as u8 as char;
                 print!("{}", c);
             }
-            Syscall::ReadCharacter => todo!(),
-            Syscall::OpenFile => todo!(),
+            Syscall::ReadCharacter => {
+                let stdin = std::io::stdin();
+                let stdin = stdin.as_fd();
+                let mut file = unsafe { File::from_raw_fd(stdin.as_raw_fd()) };
+                let mut buf = [0u8; 1];
+                file.read_exact(&mut buf).unwrap();
+                self[V0] = buf[0] as u32;
+            }
+            Syscall::OpenFile => {
+                // TODO: max file opens?
+                todo!();
+            }
             Syscall::ReadFromFile => todo!(),
             Syscall::WriteToFile => todo!(),
             Syscall::CloseFile => todo!(),
-            Syscall::Exit2 => todo!(),
-            Syscall::Time => todo!(),
+            Syscall::Exit2 => {
+                eprintln!("[syscall] exit with explicit code {:?}", self[A0]);
+                process::exit(self[A0] as i32);
+            }
+            Syscall::Time => {
+                let time = SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap();
+                let secs: u64 = time.as_millis().try_into().unwrap();
+
+                self[A0] = (secs >> 32) as u32;
+                self[A1] = secs as u32;
+            }
             Syscall::MidiOut => todo!(),
-            Syscall::Sleep => todo!(),
+            Syscall::Sleep => {
+                let dur = self[A0];
+                thread::sleep(Duration::from_millis(dur as u64));
+            }
             Syscall::MidiOutSynchronous => todo!(),
             Syscall::PrintHexInteger => {
                 print!("0x{:08x}", self[A0]);
             }
-            Syscall::PrintBinInteger => todo!(),
-            Syscall::PrintUnsignedInteger => todo!(),
-            Syscall::SetSeed => todo!(),
-            Syscall::RandomInt => todo!(),
-            Syscall::RandomIntRange => todo!(),
+            Syscall::PrintBinInteger => {
+                print!("0b{:032b}", self[A0]);
+            }
+            Syscall::PrintUnsignedInteger => {
+                print!("{}", self[A0]);
+            }
+            Syscall::SetSeed => {
+                self.rngs.insert(
+                    self[A0],
+                    StdRng::seed_from_u64(
+                        //   aaaaaaaabbbbbbbb
+                        // ^     cccccccc
+                        // because why not
+                        ((self[A0] as u64) << 32 | self[A0] as u64) ^ ((self[A0] as u64) << 16),
+                    ),
+                );
+            }
+            Syscall::RandomInt => {
+                self[V0] = self.get_rng(self[A0]).r#gen();
+            }
+            Syscall::RandomIntRange => {
+                let high = self[A1];
+                self[V0] = self.get_rng(self[A0]).gen_range(0..high);
+            }
             Syscall::RandomFloat => todo!(),
             Syscall::RandomDouble => todo!(),
+
             Syscall::ConfirmDialog => todo!(),
             Syscall::InputDialogInt => todo!(),
             Syscall::InputDialogFloat => todo!(),
@@ -126,6 +198,7 @@ impl Greg<'_> {
             Syscall::MessageDialogString => todo!(),
         }
     }
+
     pub fn spec_op(&mut self, inst: Inst) -> bool {
         let Some(func) = inst.func() else {
             return false;
@@ -337,6 +410,8 @@ fn main() {
         file: &file,
         text,
         pc: start,
+        open_files: Default::default(),
+        rngs: Default::default(),
     };
 
     greg.run();
