@@ -43,12 +43,13 @@ impl Opcode {
         (self.0 as u16 & 0xff_ff) as i16
     }
 
-    pub fn address(self) -> u32 {
-        self.0 & !(0b11_1111u32 << 26u32)
+    pub fn address(self) -> i32 {
+        (self.0 & !(0b11_1111u32 << 26u32)) as i32
     }
 }
 
-macro_rules! foo {
+#[macro_export]
+macro_rules! repr_impl {
     ([$($tt: tt)+] $vis: vis enum $name: ident ($type: ident) {$($n: ident = $v: literal),+$(,)?}) => {
         $($tt)+
         #[repr($type)]
@@ -67,17 +68,16 @@ macro_rules! foo {
 
         impl From<$type> for $name {
             fn from(value: $type) -> Self {
-                let Some(s) = Self::new(value) else {
-                    panic!("Unknown {} 0x{:02x}", stringify!($name), value);
-                };
-
-                s
+                match Self::new(value) {
+                    Some(n) => n,
+                    None => panic!("Unknown {} 0x{:02x}", stringify!($name), value)
+                }
             }
         }
     };
 }
 
-foo! {
+repr_impl! {
     [#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]]
     pub enum InstKind(u8) {
         Special = 0x00,
@@ -110,7 +110,7 @@ foo! {
     }
 }
 
-foo! {
+repr_impl! {
     [#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]]
     pub enum Func(u8) {
         Sll = 0x00,
@@ -149,7 +149,7 @@ foo! {
     }
 }
 
-foo! {
+repr_impl! {
     [#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]]
     pub enum Syscall(u32) {
         PrintInteger = 0x01,
@@ -289,6 +289,10 @@ impl Inst {
             rt: self.opcode.rt(),
             imm: self.opcode.imm(),
         }
+    }
+
+    pub fn jmp(self) -> i32 {
+        self.opcode.address()
     }
 
     pub fn func(self) -> Option<Func> {

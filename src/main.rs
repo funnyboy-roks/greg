@@ -1,3 +1,4 @@
+#[macro_use]
 pub mod inst;
 pub mod reg;
 pub mod tui;
@@ -6,9 +7,9 @@ use std::{
     borrow::BorrowMut,
     collections::HashMap,
     ffi::CStr,
-    fmt::Write,
+    fmt::Write as _,
     fs::{self, File},
-    io::Read,
+    io::{Read, Write as _},
     ops::{Index, IndexMut},
     os::fd::{AsFd, AsRawFd, FromRawFd},
     path::PathBuf,
@@ -21,6 +22,25 @@ use elf::{endian::LittleEndian, section::SectionHeader, ElfBytes};
 use inst::{Func, Imm, Inst, InstKind, Opcode, Reg, Syscall};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use reg::*;
+
+repr_impl! {
+    [#[derive(Copy, Clone, Debug)]]
+    pub enum FileFlags(u32) {
+        ReadOnly = 0,
+        WriteOnlyCreate = 1,
+        WriteOnlyAppend = 9,
+    }
+}
+
+impl FileFlags {
+    pub fn open_file(self, file: &str) -> Option<File> {
+        match self {
+            FileFlags::ReadOnly => File::open(file).ok(),
+            FileFlags::WriteOnlyCreate => File::create_new(file).ok(),
+            FileFlags::WriteOnlyAppend => File::create(file).ok(),
+        }
+    }
+}
 
 impl Iterator for Greg<'_> {
     type Item = Inst;
@@ -72,7 +92,10 @@ pub struct Greg<'a> {
     pub text: &'a [u8],
     pub text_start: usize,
     pub pc: usize,
-    pub open_files: Vec<File>,
+    // Using a hashmap since we can close files - could also do Vec<Option<File>> but that is more
+    // work than I want to do currently
+    // fd: File
+    pub open_files: HashMap<u32, File>,
     pub rngs: HashMap<u32, StdRng>,
     // TODO: Dynamic memory
     pub mem: Vec<u8>,
@@ -210,12 +233,57 @@ impl Greg<'_> {
                 self[V0] = buf[0] as u32;
             }
             Syscall::OpenFile => {
-                // TODO: max file opens?
-                todo!();
+                // TODO: max open files?
+                let file = CStr::from_bytes_until_nul(&self.file[self[A0] as usize..])
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                let flags = FileFlags::from(self[A1]);
+                // ignored in MARS
+                let _mode = self[A2];
+
+                let file = flags.open_file(file);
+
+                self[V0] = if let Some(file) = file {
+                    // 0   - stdin
+                    // 1   - stdout
+                    // 2   - stderr
+                    // 3.. - open file
+                    let fd = self.open_files.len() as u32 + 3;
+                    self.open_files.insert(fd, file);
+                    fd
+                } else {
+                    (-1i32) as u32
+                };
             }
-            Syscall::ReadFromFile => todo!(),
-            Syscall::WriteToFile => todo!(),
-            Syscall::CloseFile => todo!(),
+            Syscall::ReadFromFile => todo!("need to impl memory"),
+            Syscall::WriteToFile => {
+                let fd = self[A0];
+                let buf = self[A1] as usize;
+                let len = self[A2] as usize;
+
+                if let Some(mut file) = self.open_files.get(&fd) {
+                    if buf >= self.file.len() {
+                        todo!("memory nyi");
+                    }
+                    match file.write(&self.file[buf..buf + len]) {
+                        Ok(n) => self[V0] = n as u32,
+                        Err(e) => {
+                            dbg!(e);
+                            self[V0] = (-1i32) as u32;
+                        }
+                    }
+                } else {
+                    self[V0] = (-1i32) as u32;
+                }
+            }
+            Syscall::CloseFile => {
+                let fd = self[A0];
+
+                if let Some(_) = self.open_files.get(&fd) {
+                    self.open_files.remove(&fd);
+                }
+            }
             Syscall::Exit2 => {
                 eprintln!("[syscall] exit with explicit code {:?}", self[A0]);
                 process::exit(self[A0] as i32);
@@ -320,13 +388,22 @@ impl Greg<'_> {
             Func::Sra => {
                 self[rd] = (self[rt] as i32 >> shift as i32) as u32;
             }
-            Func::Sllv => todo!(),
-            Func::Srlv => todo!(),
-            Func::Srav => todo!(),
+            Func::Sllv => {
+                self[rd] = self[rt] << self[rs];
+            }
+            Func::Srlv => {
+                self[rd] = self[rt] >> self[rs];
+            }
+            Func::Srav => {
+                self[rd] = (self[rt] as i32 >> self[rs] as i32) as u32;
+            }
             Func::Jr => {
                 self.pc = self[rs] as usize;
             }
-            Func::Jalr => todo!(),
+            Func::Jalr => {
+                self[RA] = self.pc as u32;
+                self.pc = self[rs] as usize;
+            }
             Func::Syscall => {
                 dbg!(self[V0], self[A0], self[A1]);
                 self.syscall();
@@ -344,29 +421,59 @@ impl Greg<'_> {
                 self.hi = (prod >> 32) as u32;
                 self.lo = (prod & 0xffff_ffff) as u32;
             }
-            Func::MultU => todo!(),
-            Func::Div => todo!(),
-            Func::DivU => todo!(),
+            Func::MultU => {
+                let s = self[rs] as u32;
+                let t = self[rt] as u32;
+
+                let prod = s as u64 * t as u64;
+
+                self.hi = (prod >> 32) as u32;
+                self.lo = (prod & 0xffff_ffff) as u32;
+            }
+            Func::Div => {
+                let s = self[rs] as i32;
+                let t = self[rt] as i32;
+
+                self.hi = (s % t) as u32;
+                self.lo = (s / t) as u32;
+            }
+            Func::DivU => {
+                let s = self[rs] as u32;
+                let t = self[rt] as u32;
+
+                self.hi = s % t;
+                self.lo = s / t;
+            }
             Func::Add => {
                 self[rd] = self[rs].wrapping_add_signed(self[rt] as i32);
             }
             Func::Addu => {
                 self[rd] = self[rs].wrapping_add(self[rt]);
             }
-            Func::Sub => todo!(),
-            Func::Subu => todo!(),
+            Func::Sub => {
+                self[rd] = (self[rs] as i32 - self[rt] as i32) as u32;
+            }
+            Func::Subu => {
+                self[rd] = self[rs] - self[rt];
+            }
             Func::And => {
-                self[rd] = rs as u32 & rt as u32;
+                self[rd] = self[rs] & self[rt];
             }
             Func::Or => {
                 self[rd] = self[rs] | self[rt];
             }
-            Func::Xor => todo!(),
-            Func::Nor => todo!(),
+            Func::Xor => {
+                self[rd] = self[rs] ^ self[rt];
+            }
+            Func::Nor => {
+                self[rd] = !(self[rs] | self[rt]);
+            }
             Func::Slt => {
+                self[rd] = u32::from((self[rs as usize] as i32) < (self[rt as usize] as i32));
+            }
+            Func::Sltu => {
                 self[rd] = u32::from(self[rs as usize] < self[rt as usize]);
             }
-            Func::Sltu => todo!(),
         }
 
         true
@@ -429,7 +536,7 @@ impl Greg<'_> {
             InstKind::LL => {
                 // $rt = MEM[$base+$offset]
                 let Imm { rs, rt, imm } = inst.imm();
-                self[rt] = self.mem[self[rs] as usize + imm as usize] as u32;
+                self[rt] = self.mem[self[rs] as usize + imm as usize] as i32 as u32;
             }
             InstKind::Lwci => {
                 eprintln!("[NYI] lwci");
@@ -470,20 +577,67 @@ impl Greg<'_> {
                 let imm = imm as i16 as i32;
                 self[rt] = u32::from((self[rs] as i32) < imm);
             }
-            InstKind::J => todo!(),
-            InstKind::Jal => todo!(),
-            InstKind::Blez => todo!(),
-            InstKind::Bgtz => todo!(),
-            InstKind::SltIU => todo!(),
+            InstKind::J => {
+                let addr = inst.jmp();
+                let imm = addr << 2;
+                self.pc = self.pc.wrapping_add_signed(imm as isize);
+            }
+            InstKind::Jal => {
+                let addr = inst.jmp();
+                let imm = addr << 2;
+                self[RA] = self.pc as u32;
+                self.pc = self.pc.wrapping_add_signed(imm as isize);
+            }
+            InstKind::Blez => {
+                let Imm { rs, imm, .. } = inst.imm();
+                let imm = (imm as i32) << 2;
+                if self[rs] <= 0 {
+                    self.pc = self.pc.wrapping_add_signed(imm as isize);
+                }
+            }
+            InstKind::Bgtz => {
+                let Imm { rs, imm, .. } = inst.imm();
+                let imm = (imm as i32) << 2;
+                if self[rs] > 0 {
+                    self.pc = self.pc.wrapping_add_signed(imm as isize);
+                }
+            }
+            InstKind::SltIU => {
+                // $t = ($s < SE(i))
+                let Imm { rs, rt, imm } = inst.imm();
+                let imm = imm as u32;
+                self[rt] = u32::from(self[rs] < imm);
+            }
             InstKind::AndI => {
                 let Imm { rs, rt, imm } = inst.imm();
                 self[rt] = self[rs] & imm as u32;
             }
-            InstKind::XorI => todo!(),
+            InstKind::XorI => {
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = self[rs] ^ imm as u32;
+            }
             InstKind::Mfc0 => todo!(),
-            InstKind::LBU => todo!(),
-            InstKind::LHU => todo!(),
-            InstKind::SH => todo!(),
+            InstKind::LBU => {
+                // $t = MEM[$s+i]
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = self.mem[self[rs] as usize + imm as usize] as u32;
+            }
+            InstKind::LHU => {
+                // $t = MEM[$s+i]
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = u16::from_le_bytes(
+                    self.mem[self[rs] as usize + imm as usize..][..2]
+                        .try_into()
+                        .unwrap(),
+                ) as u32;
+            }
+            InstKind::SH => {
+                // $t = MEM[$s+i]
+                let Imm { rs, rt, imm } = inst.imm();
+                let t = (self[rt] & 0xff_ff) as u16;
+                let s = self[rs] as usize;
+                self.mem[s + imm as usize..][..2].copy_from_slice(&t.to_le_bytes());
+            }
         }
 
         true
