@@ -19,8 +19,9 @@ loop:
     move $t0, $t1
     move $t1, $t2
 
-    slti $s0, $t0, 50
-    bne $s0, $zero, loop
+    # slti $s0, $t0, 1000
+    # bne $s0, $zero, loop
+    j loop
 
     li $v0, 10
     syscall

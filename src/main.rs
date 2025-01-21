@@ -1,18 +1,22 @@
 pub mod inst;
 pub mod reg;
+pub mod tui;
 
 use std::{
     borrow::BorrowMut,
     collections::HashMap,
     ffi::CStr,
+    fmt::Write,
     fs::{self, File},
     io::Read,
     ops::{Index, IndexMut},
     os::fd::{AsFd, AsRawFd, FromRawFd},
+    path::PathBuf,
     process, thread,
     time::{Duration, SystemTime},
 };
 
+use clap::Parser;
 use elf::endian::LittleEndian;
 use inst::{Func, Imm, Inst, InstKind, Opcode, Reg, Syscall};
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -25,32 +29,32 @@ impl Iterator for Greg<'_> {
         if self.pc == self.text.len() {
             return None;
         }
-        assert!(self.pc < self.text.len());
-        let bytes = &self.text[self.pc..][..4];
+        let inst = self.curr_inst();
         self.pc += 4;
-        let opcode = Opcode(u32::from_le_bytes(bytes.try_into().unwrap()));
-        let Some(inst) = Inst::new(opcode) else {
-            todo!(
-                "full = 0b{:032b}, op = 0x{:02x} (0b{:06b}), func = 0x{:02x} (0b{:06b})",
-                opcode.0,
-                opcode.op(),
-                opcode.op(),
-                opcode.func(),
-                opcode.func()
-            )
-        };
         Some(inst)
     }
 }
 
 #[derive(Default, Debug)]
-struct Greg<'a> {
-    reg: [u32; 32],
-    file: &'a [u8],
-    text: &'a [u8],
-    pc: usize,
-    open_files: Vec<File>,
-    rngs: HashMap<u32, StdRng>,
+pub struct Greg<'a> {
+    pub reg: [u32; 32],
+    // TODO: Floating point
+    // freg: [f32; 32],
+    pub file: &'a [u8],
+    pub text: &'a [u8],
+    pub text_start: usize,
+    pub pc: usize,
+    pub open_files: Vec<File>,
+    pub rngs: HashMap<u32, StdRng>,
+    // TODO: Dynamic memory
+    pub mem: Vec<u8>,
+
+    pub hi: u32,
+    pub lo: u32,
+
+    // If Some(_), then write stdout here,
+    // otherwise, print it to stdout
+    pub stdout: Option<String>,
 }
 
 macro_rules! index {
@@ -76,6 +80,34 @@ macro_rules! index {
 index!(Greg[usize, u64, u32, u16, u8]);
 
 impl Greg<'_> {
+    fn inst_off(&self, offset: isize) -> Option<(usize, Inst)> {
+        let offset = offset * 4;
+        let Some(ip) = self.pc.checked_add_signed(offset) else {
+            return None;
+        };
+        if ip > self.text.len() - 4 {
+            return None;
+        }
+        let bytes = &self.text[ip..][..4];
+        let opcode = Opcode(u32::from_le_bytes(bytes.try_into().unwrap()));
+        let Some(inst) = Inst::new(opcode) else {
+            todo!(
+                "full = 0b{:032b}, op = 0x{:02x} (0b{:06b}), func = 0x{:02x} (0b{:06b})",
+                opcode.0,
+                opcode.op(),
+                opcode.op(),
+                opcode.func(),
+                opcode.func()
+            )
+        };
+        Some((ip, inst))
+    }
+
+    fn curr_inst(&self) -> Inst {
+        assert!(self.pc < self.text.len() - 4);
+        self.inst_off(0).unwrap().1
+    }
+
     fn get_rng(&mut self, n: u32) -> &mut StdRng {
         self.rngs
             .entry(n)
@@ -87,14 +119,26 @@ impl Greg<'_> {
         let syscall = Syscall::from(self[V0]);
         match syscall {
             Syscall::PrintInteger => {
-                print!("{}", self[A0] as i32);
+                let n = self[A0] as i32;
+                if let Some(ref mut s) = self.stdout {
+                    write!(s, "{}", n).expect("Write to string will never fail");
+                } else {
+                    print!("{}", n);
+                }
             }
             Syscall::PrintFloat => todo!(),
             Syscall::PrintDouble => todo!(),
             Syscall::PrintString => {
                 eprintln!("[syscall] print string at 0x{:08x}", self[A0]);
-                let cstr = CStr::from_bytes_until_nul(&self.file[self[A0] as usize..]).unwrap();
-                print!("{}", cstr.to_str().unwrap());
+                let cstr = CStr::from_bytes_until_nul(&self.file[self[A0] as usize..])
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                if let Some(ref mut s) = self.stdout {
+                    write!(s, "{}", cstr).expect("Write to string will never fail");
+                } else {
+                    print!("{}", cstr);
+                }
             }
             Syscall::ReadInteger => {
                 let line = std::io::stdin().lines().next().unwrap().unwrap();
@@ -120,7 +164,11 @@ impl Greg<'_> {
             }
             Syscall::PrintCharacter => {
                 let c = self[A0] as u8 as char;
-                print!("{}", c);
+                if let Some(ref mut s) = self.stdout {
+                    s.push(c)
+                } else {
+                    print!("{}", c);
+                }
             }
             Syscall::ReadCharacter => {
                 let stdin = std::io::stdin();
@@ -157,13 +205,28 @@ impl Greg<'_> {
             }
             Syscall::MidiOutSynchronous => todo!(),
             Syscall::PrintHexInteger => {
-                print!("0x{:08x}", self[A0]);
+                let n = self[A0];
+                if let Some(ref mut s) = self.stdout {
+                    write!(s, "0x{:08x}", n).expect("Write to string will never fail");
+                } else {
+                    print!("0x{:08x}", n);
+                }
             }
             Syscall::PrintBinInteger => {
-                print!("0b{:032b}", self[A0]);
+                let n = self[A0];
+                if let Some(ref mut s) = self.stdout {
+                    write!(s, "0b{:032b}", n).expect("Write to string will never fail");
+                } else {
+                    print!("0b{:032b}", n);
+                }
             }
             Syscall::PrintUnsignedInteger => {
-                print!("{}", self[A0]);
+                let n = self[A0];
+                if let Some(ref mut s) = self.stdout {
+                    write!(s, "{}", n).expect("Write to string will never fail");
+                } else {
+                    print!("{}", n);
+                }
             }
             Syscall::SetSeed => {
                 self.rngs.insert(
@@ -220,9 +283,11 @@ impl Greg<'_> {
             Func::Sll => {
                 self[rd] = self[rt] << shift;
             }
-            Func::Srl => todo!(),
+            Func::Srl => {
+                self[rd] = self[rt] as u32 >> shift as u32;
+            }
             Func::Sra => {
-                self[rd] = self[rt] >> shift;
+                self[rd] = (self[rt] as i32 >> shift as i32) as u32;
             }
             Func::Sllv => todo!(),
             Func::Srlv => todo!(),
@@ -235,11 +300,19 @@ impl Greg<'_> {
                 dbg!(self[V0], self[A0], self[A1]);
                 self.syscall();
             }
-            Func::Mfhi => todo!(),
-            Func::Mthi => todo!(),
-            Func::Mflo => todo!(),
-            Func::Mtlo => todo!(),
-            Func::Mult => todo!(),
+            Func::Mfhi => self[rd] = self.hi,
+            Func::Mthi => self.hi = self[rs],
+            Func::Mflo => self[rd] = self.lo,
+            Func::Mtlo => self.lo = self[rs],
+            Func::Mult => {
+                let s = self[rs] as i32;
+                let t = self[rt] as i32;
+
+                let prod = (s as i64 * t as i64) as u64;
+
+                self.hi = (prod >> 32) as u32;
+                self.lo = (prod & 0xffff_ffff) as u32;
+            }
             Func::MultU => todo!(),
             Func::Div => todo!(),
             Func::DivU => todo!(),
@@ -260,7 +333,7 @@ impl Greg<'_> {
             Func::Xor => todo!(),
             Func::Nor => todo!(),
             Func::Slt => {
-                self[rd] = u32::from(bool::from(self[rs as usize] < self[rt as usize]));
+                self[rd] = u32::from(self[rs as usize] < self[rt as usize]);
             }
             Func::Sltu => todo!(),
         }
@@ -268,125 +341,136 @@ impl Greg<'_> {
         true
     }
 
-    pub fn run(mut self) {
-        // TODO: Read ELF to determine how much memory is needed or something, idrk
-        let mut mem = [0u8; 4 * 1024 * 1024];
-
-        // let mut freg = [0f32; 32];
-
-        while let Some(inst) = self.next() {
-            eprintln!();
-            eprintln!("[{}:{}:{}] inst = {:?}", file!(), line!(), column!(), inst); // inlined dbg!() (ish)
-            match inst.kind {
-                InstKind::Special => {
-                    if !self.spec_op(inst) {
-                        todo!("Unknown op 0x{0:02x} (0b{0:06b})", inst.opcode.func());
-                    }
+    pub fn step(&mut self) -> bool {
+        let Some(inst) = self.next() else {
+            return false;
+        };
+        eprintln!();
+        eprintln!("[{}:{}:{}] inst = {:?}", file!(), line!(), column!(), inst); // inlined dbg!() (ish)
+        match inst.kind {
+            InstKind::Special => {
+                // TODO: have exit syscall return true here
+                if !self.spec_op(inst) {
+                    todo!("Unknown op 0x{0:02x} (0b{0:06b})", inst.opcode.func());
                 }
-                InstKind::AddI => {
-                    let Imm { rs, rt, imm } = inst.imm();
-                    self[rt] = self[rs].wrapping_add_signed(imm as i32);
-                }
-                InstKind::AddIU => {
-                    let Imm { rs, rt, imm } = inst.imm();
-                    self[rt] = self[rs] as u32 + i32::from(imm) as u32;
-                }
-                InstKind::Bal => {
-                    let Imm { imm, .. } = inst.imm();
-                    let imm = (imm as i16) << 2;
-                    self[RA] = self.pc as u32 + 8;
+            }
+            InstKind::AddI => {
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = self[rs].wrapping_add_signed(imm as i32);
+            }
+            InstKind::AddIU => {
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = self[rs] as u32 + i32::from(imm) as u32;
+            }
+            InstKind::Bal => {
+                let Imm { imm, .. } = inst.imm();
+                let imm = (imm as i16) << 2;
+                self[RA] = self.pc as u32 + 8;
+                self.pc = self.pc.wrapping_add_signed(imm as isize);
+            }
+            InstKind::LW => {
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = u32::from_le_bytes(
+                    self.mem[self[rs] as usize + imm as usize..][..4]
+                        .try_into()
+                        .unwrap(),
+                );
+            }
+            InstKind::LUI => {
+                let Imm { rt, imm, .. } = inst.imm();
+                self[rt] = imm as u32;
+            }
+            InstKind::OrI => {
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = self[rs] | imm as u32;
+            }
+            InstKind::SW => {
+                let Imm { rs, rt, imm } = inst.imm();
+                let rt = self[rt] as u32;
+                let rs = self[rs];
+                self.mem[(rs as usize + imm as usize)..][..4].copy_from_slice(&rt.to_le_bytes());
+            }
+            InstKind::SB => {
+                // MEM [$s + i]:1 = LB ($t)
+                let Imm { rs, rt, imm } = inst.imm();
+                self.mem[rs as usize + imm as usize] = rt as u8;
+            }
+            InstKind::LL => {
+                // $rt = MEM[$base+$offset]
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = self.mem[self[rs] as usize + imm as usize] as u32;
+            }
+            InstKind::Lwci => {
+                eprintln!("[NYI] lwci");
+                // $ft = memory[base+offset]
+                let Imm { rs, rt, imm } = inst.imm();
+                dbg!(rt, rs, imm);
+                // self[rt] = mem[self[rs] as usize + imm as usize] as u32;
+            }
+            InstKind::Bne => {
+                let Imm { rs, rt, imm } = inst.imm();
+                let imm = (imm as i16 as i32) << 2;
+                if self[rs] != self[rt] {
                     self.pc = self.pc.wrapping_add_signed(imm as isize);
                 }
-                InstKind::LW => {
-                    let Imm { rs, rt, imm } = inst.imm();
-                    self[rt] = u32::from_le_bytes(
-                        mem[self[rs] as usize + imm as usize..][..4]
-                            .try_into()
-                            .unwrap(),
-                    );
-                }
-                InstKind::LUI => {
-                    let Imm { rt, imm, .. } = inst.imm();
-                    self[rt] = imm as u32;
-                }
-                InstKind::OrI => {
-                    let Imm { rs, rt, imm } = inst.imm();
-                    self[rs] = self[rt] | imm as u32;
-                }
-                InstKind::SW => {
-                    let Imm { rs, rt, imm } = inst.imm();
-                    mem[(self[rs] as usize + imm as usize)..][..4]
-                        .copy_from_slice(&(self[rt] as u32).to_le_bytes());
-                }
-                InstKind::SB => {
-                    // MEM [$s + i]:1 = LB ($t)
-                    let Imm { rs, rt, imm } = inst.imm();
-                    mem[rs as usize + imm as usize] = rt as u8;
-                }
-                InstKind::LL => {
-                    // $rt = MEM[$base+$offset]
-                    let Imm { rs, rt, imm } = inst.imm();
-                    self[rt] = mem[self[rs] as usize + imm as usize] as u32;
-                }
-                InstKind::Lwci => {
-                    eprintln!("[NYI] lwci");
-                    // $ft = memory[base+offset]
-                    let Imm { rs, rt, imm } = inst.imm();
-                    dbg!(rt, rs, imm);
-                    // self[rt] = mem[self[rs] as usize + imm as usize] as u32;
-                }
-                InstKind::Bne => {
-                    let Imm { rs, rt, imm } = inst.imm();
-                    let imm = (imm as i16 as i32) << 2;
-                    if self[rs] != self[rt] {
-                        self.pc = self.pc.wrapping_add_signed(imm as isize);
-                    }
-                }
-                InstKind::Sc => {
-                    // if atomic_update then memory[base+offset] ← rt, rt ← 1 else rt ← 0
-                    let Imm { rs, rt, imm } = inst.imm();
-                    mem[(self[rs] as i32 + imm as i16 as i32) as usize] = self[rt] as u8;
-                    self[rt] = 1;
-                }
-                InstKind::Cache => {
-                    eprintln!("CACHE OP {}", inst.opcode.rt());
-                }
-                InstKind::Beq => {
-                    // if ($s == $t) pc += i << 2
-                    let Imm { rs, rt, imm } = inst.imm();
-                    let imm = (imm as i16 as i32) << 2;
-                    if self[rs] == self[rt] {
-                        self.pc = self.pc.wrapping_add_signed(imm as isize);
-                    }
-                }
-                InstKind::SltI => {
-                    // $t = ($s < SE(i))
-                    let Imm { rs, rt, imm } = inst.imm();
-                    let imm = imm as i16 as i32;
-                    self[rt] = u32::from((self[rs] as i32) < imm);
-                }
-                InstKind::J => todo!(),
-                InstKind::Jal => todo!(),
-                InstKind::Blez => todo!(),
-                InstKind::Bgtz => todo!(),
-                InstKind::SltIU => todo!(),
-                InstKind::AndI => todo!(),
-                InstKind::XorI => todo!(),
-                InstKind::Mfc0 => todo!(),
-                InstKind::LBU => todo!(),
-                InstKind::LHU => todo!(),
-                InstKind::SH => todo!(),
             }
+            InstKind::Sc => {
+                // if atomic_update then memory[base+offset] ← rt, rt ← 1 else rt ← 0
+                let Imm { rs, rt, imm } = inst.imm();
+                let s = self[rs] as i32;
+                let t = self[rt] as u8;
+                self.mem[(s + imm as i16 as i32) as usize] = t;
+                self[rt] = 1;
+            }
+            InstKind::Cache => {
+                eprintln!("CACHE OP {}", inst.opcode.rt());
+            }
+            InstKind::Beq => {
+                // if ($s == $t) pc += i << 2
+                let Imm { rs, rt, imm } = inst.imm();
+                let imm = (imm as i16 as i32) << 2;
+                if self[rs] == self[rt] {
+                    self.pc = self.pc.wrapping_add_signed(imm as isize);
+                }
+            }
+            InstKind::SltI => {
+                // $t = ($s < SE(i))
+                let Imm { rs, rt, imm } = inst.imm();
+                let imm = imm as i16 as i32;
+                self[rt] = u32::from((self[rs] as i32) < imm);
+            }
+            InstKind::J => todo!(),
+            InstKind::Jal => todo!(),
+            InstKind::Blez => todo!(),
+            InstKind::Bgtz => todo!(),
+            InstKind::SltIU => todo!(),
+            InstKind::AndI => {
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] = self[rs] & imm as u32;
+            }
+            InstKind::XorI => todo!(),
+            InstKind::Mfc0 => todo!(),
+            InstKind::LBU => todo!(),
+            InstKind::LHU => todo!(),
+            InstKind::SH => todo!(),
         }
+
+        true
     }
 }
 
+#[derive(Parser, Debug, Clone)]
+struct Cli {
+    #[clap(long, short)]
+    tui: bool,
+    #[clap()]
+    file: PathBuf,
+}
+
 fn main() {
-    let Some(path) = std::env::args().nth(1) else {
-        eprintln!("Usage: {} <file>", std::env::args().next().unwrap());
-        process::exit(1);
-    };
-    let file = fs::read(path).unwrap();
+    let cli = Cli::parse();
+
+    let file = fs::read(cli.file).unwrap();
     let elf = elf::ElfBytes::<LittleEndian>::minimal_parse(&file).unwrap();
     dbg!(&elf);
 
@@ -401,18 +485,27 @@ fn main() {
             break;
         }
     }
-    let (text, _) = elf.section_data(&text).unwrap();
+    let (text_data, _) = elf.section_data(&text).unwrap();
 
     dbg!(start);
     // let data = elf.section_data(&text).unwrap();
-    let greg = Greg {
+    let mut greg = Greg {
         reg: Default::default(),
         file: &file,
-        text,
+        text: text_data,
+        text_start: text.sh_addr as usize,
         pc: start,
         open_files: Default::default(),
         rngs: Default::default(),
+        mem: vec![0u8; 4 * 1024 * 1024],
+        stdout: cli.tui.then(String::new),
+        hi: 0,
+        lo: 0,
     };
 
-    greg.run();
+    if cli.tui {
+        tui::run_tui(greg).unwrap();
+    } else {
+        while greg.step() {}
+    }
 }

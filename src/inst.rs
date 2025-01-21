@@ -1,3 +1,5 @@
+use crate::REGS;
+
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Opcode(pub u32);
@@ -37,8 +39,8 @@ impl Opcode {
         self.0 as u8 & 0b11_1111
     }
 
-    pub fn imm(self) -> u16 {
-        self.0 as u16 & 0xff_ff
+    pub fn imm(self) -> i16 {
+        (self.0 as u16 & 0xff_ff) as i16
     }
 
     pub fn address(self) -> u32 {
@@ -193,6 +195,54 @@ foo! {
     }
 }
 
+impl Func {
+    pub fn decompile(self, inst: Inst) -> String {
+        let Reg {
+            rd, rs, rt, shift, ..
+        } = inst.reg();
+
+        let rd = rd as usize;
+        let rs = rs as usize;
+        let rt = rt as usize;
+        let shift = shift as usize;
+        match self {
+            Func::Sll => {
+                if inst.opcode.0 == 0 {
+                    format!("nop")
+                } else {
+                    format!("sll {}, {}, {}", REGS[rd], REGS[rt], shift)
+                }
+            }
+            Func::Srl => format!("srl {}, {}, {}", REGS[rd], REGS[rt], shift),
+            Func::Sra => format!("sra {}, {}, {}", REGS[rd], REGS[rt], shift),
+            Func::Sllv => format!("sllv {}, {}, {}", REGS[rd], REGS[rt], REGS[rs]),
+            Func::Srlv => format!("srlv {}, {}, {}", REGS[rd], REGS[rt], REGS[rs]),
+            Func::Srav => format!("srav {}, {}, {}", REGS[rd], REGS[rt], REGS[rs]),
+            Func::Jr => format!("jr {}", REGS[rs]),
+            Func::Jalr => format!("jalr {}", REGS[rs]),
+            Func::Syscall => format!("sycall"),
+            Func::Mfhi => format!("mfhi {}", REGS[rd]),
+            Func::Mthi => format!("mthi {}", REGS[rs]),
+            Func::Mflo => format!("mflo {}", REGS[rd]),
+            Func::Mtlo => format!("mtlo {}", REGS[rs]),
+            Func::Mult => format!("mult {}, {}", REGS[rs], REGS[rt]),
+            Func::MultU => format!("multu {}, {}", REGS[rs], REGS[rt]),
+            Func::Div => format!("div {}, {}", REGS[rs], REGS[rt]),
+            Func::DivU => format!("divu {}, {}", REGS[rs], REGS[rt]),
+            Func::Add => format!("add {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Addu => format!("addu {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Sub => format!("sub {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Subu => format!("subu {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::And => format!("and {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Or => format!("or {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Xor => format!("xor {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Nor => format!("nor {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Slt => format!("slt {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+            Func::Sltu => format!("sltu {}, {}, {}", REGS[rd], REGS[rs], REGS[rt]),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub struct Inst {
     pub kind: InstKind,
@@ -212,7 +262,7 @@ pub struct Reg {
 pub struct Imm {
     pub rs: u8,
     pub rt: u8,
-    pub imm: u16,
+    pub imm: i16,
 }
 
 impl Inst {
@@ -243,5 +293,134 @@ impl Inst {
 
     pub fn func(self) -> Option<Func> {
         Func::new(self.opcode.func())
+    }
+
+    pub fn decompile(self) -> String {
+        let op = self.opcode;
+        match self.kind {
+            InstKind::Special => {
+                if let Some(f) = self.func() {
+                    f.decompile(self)
+                } else {
+                    "<unknown special opcode>".into()
+                }
+            }
+            InstKind::Bal => format!("bal {}, 0x{:x}", REGS[op.rs() as usize], op.imm()),
+            InstKind::J => format!("j {}", op.imm()),
+            InstKind::Jal => format!("jal {}", op.imm()),
+            InstKind::Beq => format!(
+                "beq {}, {}, {}",
+                REGS[op.rs() as usize],
+                REGS[op.rt() as usize],
+                op.imm()
+            ),
+            InstKind::Bne => format!(
+                "bne {}, {}, {}",
+                REGS[op.rs() as usize],
+                REGS[op.rt() as usize],
+                op.imm()
+            ),
+            InstKind::Blez => format!("blez {}, 0x{:x}", REGS[op.rt() as usize], op.imm()),
+            InstKind::Bgtz => format!("bgtz {}, 0x{:x}", REGS[op.rt() as usize], op.imm()),
+            InstKind::AddI => format!(
+                "addi {}, {}, 0x{:x}",
+                REGS[op.rt() as usize],
+                REGS[op.rs() as usize],
+                op.imm()
+            ),
+            InstKind::AddIU => format!(
+                "addiu {}, {}, 0x{:x}",
+                REGS[op.rt() as usize],
+                REGS[op.rs() as usize],
+                op.imm()
+            ),
+            InstKind::SltI => format!(
+                "slti {}, {}, 0x{:x}",
+                REGS[op.rt() as usize],
+                REGS[op.rs() as usize],
+                op.imm()
+            ),
+            InstKind::SltIU => format!(
+                "sltiu {}, {}, 0x{:x}",
+                REGS[op.rt() as usize],
+                REGS[op.rs() as usize],
+                op.imm()
+            ),
+            InstKind::AndI => format!(
+                "andi {}, {}, 0x{:x}",
+                REGS[op.rt() as usize],
+                REGS[op.rs() as usize],
+                op.imm()
+            ),
+            InstKind::OrI => format!(
+                "ori {}, {}, 0x{:x}",
+                REGS[op.rt() as usize],
+                REGS[op.rs() as usize],
+                op.imm()
+            ),
+            InstKind::XorI => format!(
+                "xori {}, {}, 0x{:x}",
+                REGS[op.rt() as usize],
+                REGS[op.rs() as usize],
+                op.imm()
+            ),
+            InstKind::LUI => format!("lui {}, 0x{:x}", REGS[op.rt() as usize], op.imm()),
+            InstKind::Mfc0 => todo!(),
+            InstKind::LW => format!(
+                "lw {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::LBU => format!(
+                "lbu {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::LHU => format!(
+                "lhu {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::SB => format!(
+                "sb {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::SH => format!(
+                "sh {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::SW => format!(
+                "sw {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::Cache => format!("<Cache OP>",),
+            InstKind::LL => format!(
+                "ll {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::Lwci => format!(
+                "lwci {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+            InstKind::Sc => format!(
+                "sc {}, 0x{:x}({})",
+                REGS[op.rt() as usize],
+                op.imm(),
+                REGS[op.rs() as usize],
+            ),
+        }
     }
 }
