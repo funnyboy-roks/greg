@@ -17,7 +17,7 @@ use std::{
 };
 
 use clap::Parser;
-use elf::endian::LittleEndian;
+use elf::{endian::LittleEndian, section::SectionHeader, ElfBytes};
 use inst::{Func, Imm, Inst, InstKind, Opcode, Reg, Syscall};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use reg::*;
@@ -35,8 +35,36 @@ impl Iterator for Greg<'_> {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DebugInfo {
+    // string: addr
+    labels: HashMap<String, usize>,
+}
+
+impl DebugInfo {
+    pub fn from(elf: &ElfBytes<'_, LittleEndian>, text: &SectionHeader) -> Self {
+        let (symtab, strtab) = elf.symbol_table().unwrap().unwrap();
+        let mut labels = HashMap::new();
+        dbg!(text.sh_addr, text.sh_addr + text.sh_size);
+        for (sym, name) in symtab.iter().map(|sym| {
+            let name = sym.st_name;
+            (sym, strtab.get(name as usize).unwrap())
+        }) {
+            if sym.st_value >= text.sh_addr
+                && sym.st_value <= text.sh_addr + text.sh_size
+                && name.len() != 0
+                && (!name.starts_with('_') || name == "__start")
+            {
+                labels.insert(name.to_string(), sym.st_value as usize);
+            }
+        }
+        Self { labels }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct Greg<'a> {
+    // TODO: This should probably be i32 and cast to u32 when needing to do unsigned ops
     pub reg: [u32; 32],
     // TODO: Floating point
     // freg: [f32; 32],
@@ -51,6 +79,9 @@ pub struct Greg<'a> {
 
     pub hi: u32,
     pub lo: u32,
+
+    // Only included if the binary was compiled with debug info (`-ggdb` on gcc)
+    pub debug: Option<DebugInfo>,
 
     // If Some(_), then write stdout here,
     // otherwise, print it to stdout
@@ -487,7 +518,10 @@ fn main() {
     }
     let (text_data, _) = elf.section_data(&text).unwrap();
 
+    let debug = DebugInfo::from(&elf, &text);
+
     dbg!(start);
+    dbg!(&debug);
     // let data = elf.section_data(&text).unwrap();
     let mut greg = Greg {
         reg: Default::default(),
@@ -501,6 +535,7 @@ fn main() {
         stdout: cli.tui.then(String::new),
         hi: 0,
         lo: 0,
+        debug: Some(debug),
     };
 
     if cli.tui {
