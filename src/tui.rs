@@ -17,16 +17,16 @@ pub fn run_tui(greg: Greg) -> anyhow::Result<()> {
     app_result
 }
 
-struct State<'a> {
+struct State {
     editing: bool,
     curr_reg: usize,
     curr_buf: String,
     prev_regs: [u32; 32],
-    greg: Greg<'a>,
+    greg: Greg,
 }
 
-impl<'a> State<'a> {
-    fn new(greg: Greg<'a>) -> Self {
+impl State {
+    fn new(greg: Greg) -> Self {
         Self {
             editing: false,
             curr_reg: 0,
@@ -176,7 +176,7 @@ impl<'a> State<'a> {
             .add_modifier(Modifier::ITALIC);
 
         frame.render_widget(
-            Text::styled(format!("IP: 0x{:08x}", self.greg.pc), style),
+            Text::styled(format!("IP: 0x{:08x}", self.greg.ip), style),
             regs[0],
         );
 
@@ -186,7 +186,6 @@ impl<'a> State<'a> {
 
         for i in -n..=-1 {
             if let Some((ip, inst)) = self.greg.inst_off(i) {
-                let ip = ip + self.greg.text_start;
                 self.draw_inst(ip, inst, regs[idx], frame, style);
             }
             idx += 1;
@@ -194,14 +193,12 @@ impl<'a> State<'a> {
 
         {
             let style = style.bg(Color::Blue).fg(Color::Black);
-            let ip = self.greg.pc + self.greg.text_start;
-            self.draw_inst(ip, self.greg.curr_inst(), regs[idx], frame, style);
+            self.draw_inst(self.greg.ip, self.greg.curr_inst(), regs[idx], frame, style);
             idx += 1;
         }
 
         for i in 1..=n {
             if let Some((ip, inst)) = self.greg.inst_off(i) {
-                let ip = ip + self.greg.text_start;
                 self.draw_inst(ip, inst, regs[idx], frame, style);
             }
             idx += 1;
