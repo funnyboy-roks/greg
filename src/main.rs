@@ -1,5 +1,6 @@
 #[macro_use]
 pub mod inst;
+pub mod decomp;
 pub mod reg;
 pub mod tui;
 
@@ -18,6 +19,7 @@ use std::{
 };
 
 use clap::Parser;
+use decomp::{Decomp, DecompKind};
 use elf::{endian::LittleEndian, section::SectionHeader, ElfBytes};
 use inst::{Func, Imm, Inst, InstKind, Opcode, Reg, Syscall};
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -85,7 +87,7 @@ impl DebugInfo {
     pub fn from(elf: &ElfBytes<'_, LittleEndian>, text: &SectionHeader) -> Self {
         let (symtab, strtab) = elf.symbol_table().unwrap().unwrap();
         let mut labels = HashMap::new();
-        dbg!(text.sh_addr, text.sh_addr + text.sh_size);
+        // dbg!(text.sh_addr, text.sh_addr + text.sh_size);
         for (sym, name) in symtab.iter().map(|sym| {
             let name = sym.st_name;
             (sym, strtab.get(name as usize).unwrap())
@@ -186,11 +188,8 @@ pub struct Greg {
 index!(Greg.reg[usize, u64, u32, u16, u8]);
 
 impl Greg {
-    fn inst_off(&self, offset: isize) -> Option<(usize, Inst)> {
-        let Some(ip) = self.ip.checked_add_signed(offset * 4) else {
-            return None;
-        };
-        if !(self.memory.text.0..self.memory.text.1 - 4).contains(&ip) {
+    fn inst_at(&self, ip: usize) -> Option<(usize, Inst)> {
+        if !(self.memory.text.0..=self.memory.text.1 - 4).contains(&ip) {
             return None;
         }
         let opcode = Opcode(self.memory.get_u32(ip));
@@ -209,7 +208,7 @@ impl Greg {
 
     fn curr_inst(&self) -> Inst {
         assert!(self.ip <= self.memory.text.1 - 4);
-        self.inst_off(0).unwrap().1
+        self.inst_at(self.ip).unwrap().1
     }
 
     fn get_rng(&mut self, n: u32) -> &mut StdRng {
@@ -319,7 +318,7 @@ impl Greg {
                     match file.write(&self.memory[buf..buf + len]) {
                         Ok(n) => self[V0] = n as u32,
                         Err(e) => {
-                            dbg!(e);
+                            // dbg!(e);
                             self[V0] = (-1i32) as u32;
                         }
                     }
@@ -416,14 +415,14 @@ impl Greg {
             return false;
         };
 
-        dbg!(func);
-        eprintln!(
-            "[{}:{}:{}] inst.reg() = {:?}",
-            file!(),
-            line!(),
-            column!(),
-            inst.reg()
-        ); // inlined dbg!() (ish)
+        // dbg!(func);
+        // eprintln!(
+        //     "[{}:{}:{}] inst.reg() = {:?}",
+        //     file!(),
+        //     line!(),
+        //     column!(),
+        //     inst.reg()
+        // ); // inlined dbg!() (ish)
 
         let Reg {
             rs, rt, rd, shift, ..
@@ -455,7 +454,7 @@ impl Greg {
                 self.ip = self[rs] as usize;
             }
             Func::Syscall => {
-                dbg!(self[V0], self[A0], self[A1]);
+                // dbg!(self[V0], self[A0], self[A1]);
                 self.syscall();
             }
             Func::Mfhi => self[rd] = self.hi,
@@ -533,8 +532,8 @@ impl Greg {
         let Some(inst) = self.next() else {
             return false;
         };
-        eprintln!();
-        eprintln!("[{}:{}:{}] inst = {:?}", file!(), line!(), column!(), inst); // inlined dbg!() (ish)
+        // eprintln!();
+        // eprintln!("[{}:{}:{}] inst = {:?}", file!(), line!(), column!(), inst); // inlined dbg!() (ish)
         match inst.kind {
             InstKind::Special => {
                 // TODO: have exit syscall return true here
@@ -586,11 +585,11 @@ impl Greg {
                 self[rt] = self.memory[self[rs] as usize + imm as usize] as i32 as u32;
             }
             InstKind::Lwci => {
-                eprintln!("[NYI] lwci");
+                // eprintln!("[NYI] lwci");
                 // $ft = memory[base+offset]
                 let Imm { rs, rt, imm } = inst.imm();
-                dbg!(rt, rs, imm);
-                todo!()
+                // dbg!(rt, rs, imm);
+                todo!("lwci")
                 // self[rt] = mem[self[rs] as usize + imm as usize] as u32;
             }
             InstKind::Bne => {
@@ -690,6 +689,30 @@ impl Greg {
 
         true
     }
+
+    fn decompile(&self) -> Vec<Decomp> {
+        let mut lines = Vec::with_capacity(
+            (self.memory.text.1 - self.memory.text.0) / 4
+                + self.debug.as_ref().map(|d| d.labels.len()).unwrap_or(0),
+        );
+        for ip in (self.memory.text.0..self.memory.text.1).step_by(4) {
+            let Some((ip, inst)) = self.inst_at(ip) else {
+                continue;
+            };
+            if let Some(debug) = &self.debug {
+                for (label, _) in debug.labels.iter().filter(|(_, v)| **v == ip) {
+                    lines.push(Decomp {
+                        kind: DecompKind::Label(label.to_string()),
+                        addr: ip,
+                    })
+                }
+            }
+            let kind = DecompKind::from(inst, ip, self.debug.as_ref());
+            let decomp = Decomp { kind, addr: ip };
+            lines.push(decomp);
+        }
+        lines
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -703,16 +726,17 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
+    // TODO: better elf parsing
     let file = fs::read(cli.file).unwrap();
     let elf = elf::ElfBytes::<LittleEndian>::minimal_parse(&file).unwrap();
-    dbg!(&elf);
+    // dbg!(&elf);
 
-    let text = dbg!(elf.section_header_by_name(".text").unwrap().unwrap());
+    let text = elf.section_header_by_name(".text").unwrap().unwrap();
     let foo = elf.symbol_table().unwrap().unwrap();
     let mut start = 0;
     for x in foo.0.iter() {
         if foo.1.get(x.st_name as usize).unwrap() == "__start" {
-            dbg!(&x, text.sh_addr);
+            // dbg!(&x, text.sh_addr);
             start = x.st_value as usize;
             break;
         }
@@ -725,9 +749,6 @@ fn main() {
     let mut mem = file;
     mem.reserve(mem.len() + 4 * 1024 * 1024);
 
-    dbg!(start);
-    dbg!(&debug);
-    // let data = elf.section_data(&text).unwrap();
     let mut greg = Greg {
         reg: Default::default(),
         memory: Memory {
@@ -738,20 +759,21 @@ fn main() {
             file: (0, file_len),
             memory: mem,
         },
-        // file: &file,
-        // text: text_data,
-        // text_start: text.sh_addr as usize,
         ip: start,
         open_files: Default::default(),
         rngs: Default::default(),
-        // mem: vec![0u8; 4 * 1024 * 1024],
         stdout: cli.tui.then(String::new),
         hi: 0,
         lo: 0,
         debug: Some(debug),
     };
 
-    dbg!(&greg);
+    // dbg!(&greg);
+
+    // println!("decompiled:");
+    // for inst in greg.decompile() {
+    //     println!("   {:?}", inst);
+    // }
 
     if cli.tui {
         tui::run_tui(greg).unwrap();
