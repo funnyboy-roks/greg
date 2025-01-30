@@ -119,7 +119,7 @@ impl State {
             if STEP.swap(false, Ordering::Relaxed) {
                 self.step();
             }
-            if !event::poll(Duration::from_millis(25))? {
+            if !event::poll(Duration::from_millis(10))? {
                 continue;
             }
             match event::read()? {
@@ -274,15 +274,10 @@ impl State {
 
         let before = rect.height as usize / 4;
 
-        let curr = self
-            .decomp
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| match d.kind {
-                DecompKind::Label(_) => false,
-                _ => d.addr >= self.greg.ip, // >= in-case ip is not actually a statement for some reason
-            })
-            .next();
+        let curr = self.decomp.iter().enumerate().find(|(_, d)| match d.kind {
+            DecompKind::Label(_) => false,
+            _ => d.addr >= self.greg.ip, // >= in-case ip is not actually a statement for some reason
+        });
 
         if let Some((curr, active)) = curr {
             let active_label = active.active_label();
@@ -469,7 +464,7 @@ fn render_decomp<'a>(decomp: &'a Decomp, active_label: Option<&'a str>) -> Line<
                 ", ".into(),
                 t.into(),
                 ", ".into(),
-                label.into(),
+                label,
             ]
         }
         DecompKind::BranchZ { o, s, pos } => {
@@ -483,7 +478,7 @@ fn render_decomp<'a>(decomp: &'a Decomp, active_label: Option<&'a str>) -> Line<
                 " ".into(),
                 s.into(),
                 ", ".into(),
-                label.into(),
+                label,
             ]
         }
         DecompKind::LoadStore { o, s, t, i } => {
@@ -504,12 +499,7 @@ fn render_decomp<'a>(decomp: &'a Decomp, active_label: Option<&'a str>) -> Line<
                 Addr::Label(l) => l.to_string().fg(Color::Yellow),
                 Addr::Relative(n) => n.to_string().into(),
             };
-            vec![
-                INDENT.into(),
-                o.inst_name().into(),
-                " ".into(),
-                label.into(),
-            ]
+            vec![INDENT.into(), o.inst_name().into(), " ".into(), label]
         }
     };
     Line::from(values)

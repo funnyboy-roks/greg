@@ -15,82 +15,82 @@ pub enum DecompKind {
     Syscall,
     Nop,
     Label(String),
-    /// ArithLog	f $d, $s, $t
+    /// ArithLog - f $d, $s, $t
     ArithLog {
         f: Inst,
         d: Reg,
         s: Reg,
         t: Reg,
     },
-    /// DivMult	f $s, $t
+    /// DivMult - f $s, $t
     DivMult {
         f: Inst,
         s: Reg,
         t: Reg,
     },
-    /// Shift	f $d, $t, a
+    /// Shift - f $d, $t, a
     Shift {
         f: Inst,
         d: Reg,
         t: Reg,
         a: u32,
     },
-    /// ShiftV	f $d, $t, $s
+    /// ShiftV - f $d, $t, $s
     ShiftV {
         f: Inst,
         d: Reg,
         t: Reg,
         s: Reg,
     },
-    /// JumpR	f $s
+    /// JumpR - f $s
     JumpR {
         f: Inst,
         s: Reg,
     },
-    /// MoveFrom	f $d
+    /// MoveFrom - f $d
     MoveFrom {
         f: Inst,
         d: Reg,
     },
-    /// MoveTo	f $s
+    /// MoveTo - f $s
     MoveTo {
         f: Inst,
         s: Reg,
     },
-    /// ArithLogI	o $t, $s, i
+    /// ArithLogI - o $t, $s, i
     ArithLogI {
         o: Inst,
         t: Reg,
         s: Reg,
         i: i32,
     },
-    /// LoadI	o $t, immed32
+    /// LoadI - o $t, immed32
     LoadI {
         o: Inst,
         t: Reg,
         imm: u32,
     },
-    /// Branch	o $s, $t, label
+    /// Branch - o $s, $t, label
     Branch {
         o: Inst,
         s: Reg,
         t: Reg,
         pos: Addr,
     },
-    /// BranchZ	o $s, label
+    /// BranchZ - o $s, label
     BranchZ {
         o: Inst,
         s: Reg,
         pos: Addr,
     },
-    /// LoadStore	o $t, i ($s)
+    /// LoadStore - o $t, i ($s)
     LoadStore {
         o: Inst,
         s: Reg,
         t: Reg,
         i: i32,
     },
-    /// Jump	o label
+    /// Jump - o label
     Jump {
         o: Inst,
         pos: Addr,

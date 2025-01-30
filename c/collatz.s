@@ -2,21 +2,21 @@
 
 .globl __start
 __start:
-    li $t0, 840
+    li $t0, 0x0fffffff
 
 loop:
     andi $t1, $t0, 1
     bne $t1, $zero, odd
 # even
-    sra $t0, $t0, 1 # $t0 >>= 1
+    srl $t0, $t0, 1 # $t0 >>= 1
     j done
 odd:
     li $s0, 3
-    mult $t0, $s0
+    multu $t0, $s0
     mflo $t0
-    addi $t0, $t0, 1
+    addiu $t0, $t0, 1
 done:
-    li $v0, 1
+    li $v0, 36
     move $a0, $t0
     syscall
 

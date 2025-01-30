@@ -101,7 +101,7 @@ impl DebugInfo {
         }) {
             if sym.st_value >= text.sh_addr
                 && sym.st_value <= text.sh_addr + text.sh_size
-                && name.len() != 0
+                && !name.is_empty()
                 && (!name.starts_with('_') || name == "__start")
             {
                 labels.insert(name.to_string(), sym.st_value as usize);
@@ -356,7 +356,7 @@ impl Greg {
             Syscall::CloseFile => {
                 let fd = self[A0];
 
-                if let Some(_) = self.open_files.get(&fd) {
+                if self.open_files.contains_key(&fd) {
                     self.open_files.remove(&fd);
                 }
             }
@@ -773,10 +773,10 @@ fn main() {
         .section_header_by_name(".data")
         .unwrap()
         .or_else(|| elf.section_header_by_name(".rodata").unwrap());
-    let foo = elf.symbol_table().unwrap().unwrap();
+    let symtab = elf.symbol_table().unwrap().unwrap();
     let mut start = 0;
-    for x in foo.0.iter() {
-        if foo.1.get(x.st_name as usize).unwrap() == "__start" {
+    for x in symtab.0.iter() {
+        if symtab.1.get(x.st_name as usize).unwrap() == "__start" {
             // dbg!(&x, text.sh_addr);
             start = x.st_value as usize;
             break;

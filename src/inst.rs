@@ -38,7 +38,7 @@ impl Opcode {
     }
 
     pub fn imm(self) -> i16 {
-        (self.0 as u16 & 0xff_ff) as i16
+        self.0 as u16 as i16
     }
 
     pub fn address(self) -> i32 {

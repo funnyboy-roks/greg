@@ -206,8 +206,8 @@ impl Display for Reg {
     }
 }
 
-impl Into<Span<'static>> for &Reg {
-    fn into(self) -> Span<'static> {
-        self.into_span()
+impl From<&Reg> for Span<'static> {
+    fn from(val: &Reg) -> Self {
+        val.into_span()
     }
 }
