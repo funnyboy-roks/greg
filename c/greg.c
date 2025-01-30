@@ -4,7 +4,7 @@ int main(void);
 
 typedef unsigned int size_t;
 
-size_t syscall0(size_t call) {
+static inline size_t syscall0(size_t call) {
     asm(
         "move $v0, %0\n"
         "syscall"
@@ -14,7 +14,7 @@ size_t syscall0(size_t call) {
     );
 }
 
-size_t syscall1(size_t call, size_t arg1) {
+static inline size_t syscall1(size_t call, size_t arg1) {
     asm(
         "move $v0, %0\n"
         "move $a0, %1\n"

@@ -88,7 +88,7 @@ pub enum DecompKind {
         o: Inst,
         s: Reg,
         t: Reg,
-        i: u32,
+        i: i32,
     },
     /// Jump	o label
     Jump {
@@ -168,7 +168,7 @@ impl DecompKind {
                 DecompKind::LoadStore {
                     o: inst,
                     t: Reg::from(imm.rt),
-                    i: imm.imm as u32,
+                    i: imm.imm as i32,
                     s: Reg::from(imm.rs),
                 }
             }};
@@ -309,8 +309,9 @@ impl DecompKind {
             InstKind::AndI => make!(ArithLogI),
             InstKind::OrI => make!(ArithLogI),
             InstKind::XorI => make!(ArithLogI),
-            InstKind::LUI => todo!(),
+            InstKind::LUI => make!(ArithLogI),
             InstKind::Mfc0 => todo!(),
+            InstKind::LB => make!(LoadStore),
             InstKind::LW => make!(LoadStore),
             InstKind::LBU => make!(LoadStore),
             InstKind::LHU => make!(LoadStore),

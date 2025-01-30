@@ -109,6 +109,7 @@ pub struct Memory {
     // (start, end)
     text: (usize, usize),
     file: (usize, usize),
+    stack: (usize, usize),
 
     memory: Vec<u8>,
 }
@@ -122,6 +123,10 @@ impl Memory {
         &self.memory[self.file.0..self.file.1]
     }
 
+    pub fn stack(&self) -> &[u8] {
+        &self.memory[self.stack.0..self.stack.1]
+    }
+
     pub fn alloc(&mut self, _count: usize) -> usize {
         todo!("Allocator");
     }
@@ -131,7 +136,7 @@ impl Memory {
         I: Into<usize>,
     {
         u32::from_le_bytes(
-            self[index.into()..][..std::mem::size_of::<u32>()]
+            self.memory[index.into()..][..std::mem::size_of::<u32>()]
                 .try_into()
                 .unwrap(),
         )
@@ -141,7 +146,8 @@ impl Memory {
     where
         I: Into<usize>,
     {
-        self[index.into()..][..std::mem::size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
+        self.memory[index.into()..][..std::mem::size_of::<u32>()]
+            .copy_from_slice(&value.to_le_bytes());
     }
 }
 
@@ -547,7 +553,7 @@ impl Greg {
             }
             InstKind::AddIU => {
                 let Imm { rs, rt, imm } = inst.imm();
-                self[rt] = self[rs] as u32 + i32::from(imm) as u32;
+                self[rt] = (self[rs] as u32).wrapping_add(imm as u32);
             }
             InstKind::Bal => {
                 let Imm { imm, .. } = inst.imm();
@@ -555,13 +561,22 @@ impl Greg {
                 self[RA] = self.ip as u32 + 8;
                 self.ip = self.ip.wrapping_add_signed(imm as isize);
             }
+            InstKind::LB => {
+                let Imm { rs, rt, imm } = inst.imm();
+                self[rt] =
+                    self.memory.get_u32(self[rs] as usize + imm as usize) as i32 as i8 as u32;
+            }
             InstKind::LW => {
                 let Imm { rs, rt, imm } = inst.imm();
-                self[rt] = self.memory.get_u32(self[rs] as usize + imm as usize);
+                let base = self[rs];
+                let offset = imm as i32;
+                let addr = base.wrapping_add_signed(offset);
+                assert_eq!(addr & 0b11, 0);
+                self[rt] = self.memory.get_u32(addr as usize);
             }
             InstKind::LUI => {
                 let Imm { rt, imm, .. } = inst.imm();
-                self[rt] = imm as u32;
+                self[rt] = (imm as u32) << 16;
             }
             InstKind::OrI => {
                 let Imm { rs, rt, imm } = inst.imm();
@@ -571,7 +586,8 @@ impl Greg {
                 let Imm { rs, rt, imm } = inst.imm();
                 let rt = self[rt] as u32;
                 let rs = self[rs];
-                self.memory.set_u32(rs as usize + imm as usize, rt);
+                self.memory
+                    .set_u32(rs.wrapping_add_signed(imm.into()) as usize, rt);
             }
             InstKind::SB => {
                 // MEM [$s + i]:1 = LB ($t)
@@ -746,8 +762,9 @@ fn main() {
     let debug = DebugInfo::from(&elf, &text);
 
     let file_len = file.len();
+    let file_len = file_len + file_len % 4;
     let mut mem = file;
-    mem.reserve(mem.len() + 4 * 1024 * 1024);
+    mem.resize(file_len + 2 * 1024 * 1024, 0);
 
     let mut greg = Greg {
         reg: Default::default(),
@@ -757,6 +774,7 @@ fn main() {
                 text.sh_addr as usize + text.sh_size as usize,
             ),
             file: (0, file_len),
+            stack: (file_len, file_len + 1024 * 1024),
             memory: mem,
         },
         ip: start,
@@ -767,6 +785,8 @@ fn main() {
         lo: 0,
         debug: Some(debug),
     };
+
+    greg[SP] = greg.memory.stack.1 as u32;
 
     // dbg!(&greg);
 
