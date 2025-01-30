@@ -114,6 +114,7 @@ impl DebugInfo {
 #[derive(Clone, Debug, Default)]
 pub struct Memory {
     // (start, end)
+    data: Option<(usize, usize)>,
     text: (usize, usize),
     file: (usize, usize),
     stack: (usize, usize),
@@ -768,6 +769,10 @@ fn main() {
     // dbg!(&elf);
 
     let text = elf.section_header_by_name(".text").unwrap().unwrap();
+    let data = elf
+        .section_header_by_name(".data")
+        .unwrap()
+        .or_else(|| elf.section_header_by_name(".rodata").unwrap());
     let foo = elf.symbol_table().unwrap().unwrap();
     let mut start = 0;
     for x in foo.0.iter() {
@@ -789,6 +794,12 @@ fn main() {
     let mut greg = Greg {
         reg: Default::default(),
         memory: Memory {
+            data: data.map(|data| {
+                (
+                    data.sh_addr as usize,
+                    data.sh_addr as usize + data.sh_size as usize,
+                )
+            }),
             text: (
                 text.sh_addr as usize,
                 text.sh_addr as usize + text.sh_size as usize,
@@ -806,6 +817,7 @@ fn main() {
         debug: Some(debug),
     };
 
+    greg[GP] = greg.memory.data.map(|d| d.0).unwrap_or(0) as u32;
     greg[SP] = greg.memory.stack.1 as u32;
 
     // dbg!(&greg);
