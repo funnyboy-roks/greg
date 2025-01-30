@@ -14,7 +14,7 @@ use std::{
     ops::{Deref, DerefMut, Index, IndexMut},
     os::fd::{AsFd, AsRawFd, FromRawFd},
     path::PathBuf,
-    process, thread,
+    thread,
     time::{Duration, SystemTime},
 };
 
@@ -24,6 +24,13 @@ use elf::{endian::LittleEndian, section::SectionHeader, ElfBytes};
 use inst::{Func, Imm, Inst, InstKind, Opcode, Reg, Syscall};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use reg::*;
+
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
+pub enum InstructionResult {
+    None,
+    Done,
+    Exit(u32),
+}
 
 repr_impl! {
     [#[derive(Copy, Clone, Debug)]]
@@ -224,30 +231,30 @@ impl Greg {
             .borrow_mut()
     }
 
-    pub fn syscall(&mut self) {
+    pub fn syscall(&mut self) -> InstructionResult {
         let syscall = Syscall::from(self[V0]);
+        macro_rules! print_write {
+            ($($arg:tt)*) => {{
+                if let Some(ref mut s) = self.stdout {
+                    write!(s, $($arg)*).expect("Write to string will never fail");
+                } else {
+                    print!($($arg)*);
+                }
+            }};
+        }
         match syscall {
             Syscall::PrintInteger => {
                 let n = self[A0] as i32;
-                if let Some(ref mut s) = self.stdout {
-                    write!(s, "{}", n).expect("Write to string will never fail");
-                } else {
-                    print!("{}", n);
-                }
+                print_write!("{}", n);
             }
             Syscall::PrintFloat => todo!(),
             Syscall::PrintDouble => todo!(),
             Syscall::PrintString => {
-                eprintln!("[syscall] print string at 0x{:08x}", self[A0]);
                 let cstr = CStr::from_bytes_until_nul(&self.memory[self[A0] as usize..])
                     .unwrap()
                     .to_str()
                     .unwrap();
-                if let Some(ref mut s) = self.stdout {
-                    write!(s, "{}", cstr).expect("Write to string will never fail");
-                } else {
-                    print!("{}", cstr);
-                }
+                print_write!("{}", cstr);
             }
             Syscall::ReadInteger => {
                 let line = std::io::stdin().lines().next().unwrap().unwrap();
@@ -268,16 +275,12 @@ impl Greg {
             }
             Syscall::Sbrk => todo!(),
             Syscall::Exit => {
-                eprintln!("[syscall] exit with code 0");
-                process::exit(0);
+                print_write!("[syscall] exit with code 0");
+                return InstructionResult::Exit(0);
             }
             Syscall::PrintCharacter => {
                 let c = self[A0] as u8 as char;
-                if let Some(ref mut s) = self.stdout {
-                    s.push(c)
-                } else {
-                    print!("{}", c);
-                }
+                print_write!("{}", c);
             }
             Syscall::ReadCharacter => {
                 let stdin = std::io::stdin();
@@ -311,7 +314,24 @@ impl Greg {
                     (-1i32) as u32
                 };
             }
-            Syscall::ReadFromFile => todo!("need to impl memory"),
+            Syscall::ReadFromFile => {
+                // $a0 = file descriptor
+                // $a1 = address of input buffer
+                // $a2 = maximum number of characters to read
+                // TODO: need memory to exist first
+                let fd = self[A0];
+                let addr = self[A1] as usize;
+                let bytes = self[A2] as usize;
+                let file = self.open_files.get_mut(&fd).unwrap();
+                let buf = &mut self.memory[addr..][..bytes];
+                match file.read(buf) {
+                    Ok(n) => self[V0] = n as u32,
+                    Err(e) => {
+                        dbg!(e);
+                        self[V0] = (-1i32) as u32;
+                    }
+                }
+            }
             Syscall::WriteToFile => {
                 let fd = self[A0];
                 let buf = self[A1] as usize;
@@ -323,7 +343,7 @@ impl Greg {
                     }
                     match file.write(&self.memory[buf..buf + len]) {
                         Ok(n) => self[V0] = n as u32,
-                        Err(e) => {
+                        Err(_) => {
                             // dbg!(e);
                             self[V0] = (-1i32) as u32;
                         }
@@ -340,8 +360,9 @@ impl Greg {
                 }
             }
             Syscall::Exit2 => {
-                eprintln!("[syscall] exit with explicit code {:?}", self[A0]);
-                process::exit(self[A0] as i32);
+                let code = self[A0];
+                print_write!("[syscall] exit with explicit code {:?}", code);
+                return InstructionResult::Exit(code);
             }
             Syscall::Time => {
                 let time = SystemTime::now()
@@ -414,11 +435,12 @@ impl Greg {
             Syscall::MessageDialogDouble => todo!(),
             Syscall::MessageDialogString => todo!(),
         }
+        InstructionResult::None
     }
 
-    pub fn spec_op(&mut self, inst: Inst) -> bool {
+    pub fn spec_op(&mut self, inst: Inst) -> InstructionResult {
         let Some(func) = inst.func() else {
-            return false;
+            todo!("Unknown op 0x{0:02x} (0b{0:06b})", inst.opcode.func());
         };
 
         // dbg!(func);
@@ -461,7 +483,7 @@ impl Greg {
             }
             Func::Syscall => {
                 // dbg!(self[V0], self[A0], self[A1]);
-                self.syscall();
+                return self.syscall();
             }
             Func::Mfhi => self[rd] = self.hi,
             Func::Mthi => self.hi = self[rs],
@@ -531,21 +553,19 @@ impl Greg {
             }
         }
 
-        true
+        InstructionResult::None
     }
 
-    pub fn step(&mut self) -> bool {
+    pub fn step(&mut self) -> InstructionResult {
         let Some(inst) = self.next() else {
-            return false;
+            return InstructionResult::Done;
         };
         // eprintln!();
         // eprintln!("[{}:{}:{}] inst = {:?}", file!(), line!(), column!(), inst); // inlined dbg!() (ish)
         match inst.kind {
             InstKind::Special => {
                 // TODO: have exit syscall return true here
-                if !self.spec_op(inst) {
-                    todo!("Unknown op 0x{0:02x} (0b{0:06b})", inst.opcode.func());
-                }
+                return self.spec_op(inst);
             }
             InstKind::AddI => {
                 let Imm { rs, rt, imm } = inst.imm();
@@ -603,7 +623,7 @@ impl Greg {
             InstKind::Lwci => {
                 // eprintln!("[NYI] lwci");
                 // $ft = memory[base+offset]
-                let Imm { rs, rt, imm } = inst.imm();
+                // let Imm { rs, rt, imm } = inst.imm();
                 // dbg!(rt, rs, imm);
                 todo!("lwci")
                 // self[rt] = mem[self[rs] as usize + imm as usize] as u32;
@@ -703,7 +723,7 @@ impl Greg {
             }
         }
 
-        true
+        InstructionResult::None
     }
 
     fn decompile(&self) -> Vec<Decomp> {
@@ -798,6 +818,6 @@ fn main() {
     if cli.tui {
         tui::run_tui(greg).unwrap();
     } else {
-        while greg.step() {}
+        while greg.step() == InstructionResult::None {}
     }
 }

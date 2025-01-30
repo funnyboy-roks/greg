@@ -1,5 +1,3 @@
-use crate::REGS;
-
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct Opcode(pub u32);

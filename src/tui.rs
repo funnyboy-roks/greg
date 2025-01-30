@@ -1,8 +1,17 @@
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span, Text},
+    text::{Line, Text},
     widgets::{Block, Borders},
     DefaultTerminal, Frame,
 };
@@ -10,14 +19,36 @@ use ratatui::{
 use crate::{
     decomp::{Addr, Decomp, DecompKind},
     reg::Reg,
-    Greg, REGS,
+    Greg, InstructionResult,
 };
+
+static DURATION: AtomicU64 = AtomicU64::new(1000);
+static PLAY: AtomicBool = AtomicBool::new(false);
+
+fn tock(tx: mpsc::Sender<()>) {
+    loop {
+        let start = Instant::now();
+
+        if PLAY.load(Ordering::Relaxed) {
+            if let Err(_) = tx.send(()) {
+                PLAY.store(false, Ordering::Relaxed);
+                return;
+            }
+        }
+
+        let wait_time = Duration::from_millis(DURATION.load(Ordering::Relaxed));
+        if let Some(remaining) = wait_time.checked_sub(start.elapsed()) {
+            thread::sleep(remaining);
+        }
+    }
+}
 
 pub fn run_tui(greg: Greg) -> anyhow::Result<()> {
     let terminal = ratatui::init();
-    let app_result = State::new(greg).run(terminal);
-    // TODO: just make sure that greg returns a value when done
-    defer::defer! { ratatui::restore() };
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || tock(tx));
+    let app_result = State::new(greg, rx).run(terminal);
+    ratatui::restore();
     app_result
 }
 
@@ -28,10 +59,12 @@ struct State {
     prev_regs: [u32; 32],
     greg: Greg,
     decomp: Vec<Decomp>,
+    rx: mpsc::Receiver<()>,
+    halt: bool,
 }
 
 impl State {
-    fn new(greg: Greg) -> Self {
+    fn new(greg: Greg, rx: mpsc::Receiver<()>) -> Self {
         Self {
             editing: false,
             curr_reg: 0,
@@ -39,11 +72,33 @@ impl State {
             prev_regs: Default::default(),
             decomp: greg.decompile(),
             greg,
+            rx,
+            halt: false,
+        }
+    }
+
+    fn step(&mut self) {
+        if !self.halt {
+            self.prev_regs.copy_from_slice(&self.greg.reg);
+            match self.greg.step() {
+                InstructionResult::None => {}
+                InstructionResult::Done => self.halt = true,
+                InstructionResult::Exit(_) => self.halt = true,
+            }
         }
     }
 
     fn run(mut self, mut terminal: DefaultTerminal) -> anyhow::Result<()> {
         loop {
+            if PLAY.load(Ordering::Relaxed) {
+                if let Ok(()) = self.rx.try_recv() {
+                    self.step();
+                }
+                if !event::poll(Duration::from_millis(25))? {
+                    terminal.draw(|frame| self.draw(frame))?;
+                    continue;
+                }
+            }
             terminal.draw(|frame| self.draw(frame))?;
             match event::read()? {
                 Event::Key(key) => {
@@ -58,6 +113,21 @@ impl State {
                         KeyCode::Char('k') if !self.editing => {
                             self.curr_reg = self.curr_reg.saturating_sub(1);
                         }
+                        KeyCode::Char('+') if !self.editing => {
+                            DURATION.fetch_add(100, Ordering::Relaxed);
+                        }
+                        KeyCode::Char('-') if !self.editing => {
+                            let prev = DURATION.load(Ordering::Relaxed);
+                            let _ = DURATION.compare_exchange(
+                                prev,
+                                prev.saturating_sub(100),
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            );
+                        }
+                        KeyCode::Char(' ') if !self.editing => {
+                            PLAY.fetch_not(Ordering::Relaxed);
+                        }
                         KeyCode::Enter if self.editing => {
                             self.editing = false;
                             self.greg.reg[self.curr_reg] =
@@ -66,6 +136,7 @@ impl State {
                         }
                         KeyCode::Enter if !self.editing => {
                             self.editing = true;
+
                             let curr = self.greg.reg[self.curr_reg];
                             if curr != 0 {
                                 self.curr_buf = format!("{:x}", curr);
@@ -79,8 +150,7 @@ impl State {
                             self.curr_buf.pop();
                         }
                         KeyCode::Char('n') if !self.editing => {
-                            self.prev_regs.copy_from_slice(&self.greg.reg);
-                            self.greg.step();
+                            self.step();
                         }
                         KeyCode::Char(c @ '0'..='9' | c @ 'a'..='f' | c @ 'A'..='F')
                             if self.editing =>
