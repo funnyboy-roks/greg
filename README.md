@@ -2,6 +2,8 @@
 
 Greg is a VM for the MIPS32 architecture.
 
+![Screenshot](./img/screenshot.png)
+
 ## References
 
 - [MIPS Encoding Reference](https://student.cs.uwaterloo.ca/~isg/res/mips/opcodes) - Great opcode reference, gives roughly C-equivalents for each opcode
