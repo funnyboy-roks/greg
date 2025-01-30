@@ -1,8 +1,5 @@
 use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
-    },
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -24,17 +21,13 @@ use crate::{
 
 static DURATION: AtomicU64 = AtomicU64::new(1000);
 static PLAY: AtomicBool = AtomicBool::new(false);
+static STEP: AtomicBool = AtomicBool::new(false);
 
-fn tock(tx: mpsc::Sender<()>) {
+fn tock() {
     loop {
         let start = Instant::now();
 
-        if PLAY.load(Ordering::Relaxed) {
-            if let Err(_) = tx.send(()) {
-                PLAY.store(false, Ordering::Relaxed);
-                return;
-            }
-        }
+        STEP.store(PLAY.load(Ordering::Relaxed), Ordering::Relaxed);
 
         let wait_time = Duration::from_millis(DURATION.load(Ordering::Relaxed));
         if let Some(remaining) = wait_time.checked_sub(start.elapsed()) {
@@ -45,9 +38,8 @@ fn tock(tx: mpsc::Sender<()>) {
 
 pub fn run_tui(greg: Greg) -> anyhow::Result<()> {
     let terminal = ratatui::init();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || tock(tx));
-    let app_result = State::new(greg, rx).run(terminal);
+    std::thread::spawn(tock);
+    let app_result = State::new(greg).run(terminal);
     ratatui::restore();
     app_result
 }
@@ -59,12 +51,11 @@ struct State {
     prev_regs: [u32; 32],
     greg: Greg,
     decomp: Vec<Decomp>,
-    rx: mpsc::Receiver<()>,
     halt: bool,
 }
 
 impl State {
-    fn new(greg: Greg, rx: mpsc::Receiver<()>) -> Self {
+    fn new(greg: Greg) -> Self {
         Self {
             editing: false,
             curr_reg: 0,
@@ -72,7 +63,6 @@ impl State {
             prev_regs: Default::default(),
             decomp: greg.decompile(),
             greg,
-            rx,
             halt: false,
         }
     }
@@ -82,24 +72,27 @@ impl State {
             self.prev_regs.copy_from_slice(&self.greg.reg);
             match self.greg.step() {
                 InstructionResult::None => {}
-                InstructionResult::Done => self.halt = true,
-                InstructionResult::Exit(_) => self.halt = true,
+                InstructionResult::Done => {
+                    self.halt = true;
+                    PLAY.store(false, Ordering::Relaxed);
+                }
+                InstructionResult::Exit(_) => {
+                    self.halt = true;
+                    PLAY.store(false, Ordering::Relaxed);
+                }
             }
         }
     }
 
     fn run(mut self, mut terminal: DefaultTerminal) -> anyhow::Result<()> {
         loop {
-            if PLAY.load(Ordering::Relaxed) {
-                if let Ok(()) = self.rx.try_recv() {
-                    self.step();
-                }
-                if !event::poll(Duration::from_millis(25))? {
-                    terminal.draw(|frame| self.draw(frame))?;
-                    continue;
-                }
-            }
             terminal.draw(|frame| self.draw(frame))?;
+            if STEP.swap(false, Ordering::Relaxed) {
+                self.step();
+            }
+            if !event::poll(Duration::from_millis(25))? {
+                continue;
+            }
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
