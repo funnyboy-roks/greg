@@ -370,8 +370,8 @@ impl Greg {
                     .unwrap();
                 let secs: u64 = time.as_millis().try_into().unwrap();
 
-                self[A0] = (secs >> 32) as u32;
-                self[A1] = secs as u32;
+                self[A0] = secs as u32;
+                self[A1] = (secs >> 32) as u32;
             }
             Syscall::MidiOut => todo!(),
             Syscall::Sleep => {
