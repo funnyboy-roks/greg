@@ -1,9 +1,13 @@
 CC=./mips32el--musl--stable-2024.05-1/bin/mipsel-buildroot-linux-musl-gcc
-CFLAGS=-nostdlib -ggdb
+CFLAGS=-nostdlib -ggdb -O3
 
 # TODO: I don't want to specify each target
 
-all: build/fib build/hello build/fib-asm build/collatz
+all: build/fib build/hello build/fib-asm build/collatz build/hello-manual
+
+build/hello-manual: hello-manual.s $(CC)
+	mkdir -p build
+	$(CC) $(CFLAGS) -o build/hello-manual hello-manual.s
 
 build/collatz: collatz.s $(CC)
 	mkdir -p build

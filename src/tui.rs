@@ -44,14 +44,42 @@ pub fn run_tui(greg: Greg) -> anyhow::Result<()> {
     app_result
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum DisplayMode {
+    Hex = 16,
+    Dec = 10,
+}
+
+impl DisplayMode {
+    fn radix(self) -> u32 {
+        self as u32
+    }
+}
+
+fn get_showable_char(c: u32) -> Option<char> {
+    if !(0..=255).contains(&c) {
+        return None;
+    }
+
+    let c = c as u8 as char;
+
+    match c {
+        '\n' | ' ' | '\t' => Some(c),
+        c if c.is_ascii_graphic() => Some(c),
+        _ => None,
+    }
+}
+
 struct State {
     editing: bool,
     curr_reg: usize,
-    curr_buf: String,
+    curr_buf: u32,
     prev_regs: [u32; 32],
     greg: Greg,
     decomp: Vec<Decomp>,
     halt: bool,
+    display_mode: DisplayMode,
 }
 
 impl State {
@@ -59,11 +87,12 @@ impl State {
         Self {
             editing: false,
             curr_reg: 0,
-            curr_buf: String::new(),
+            curr_buf: 0,
             prev_regs: Default::default(),
             decomp: greg.decompile(),
             greg,
             halt: false,
+            display_mode: DisplayMode::Hex,
         }
     }
 
@@ -100,10 +129,12 @@ impl State {
                     }
 
                     match key.code {
-                        KeyCode::Char('j') if !self.editing => {
+                        KeyCode::Char('d') if !self.editing => self.display_mode = DisplayMode::Dec,
+                        KeyCode::Char('x') if !self.editing => self.display_mode = DisplayMode::Hex,
+                        KeyCode::Char('j') | KeyCode::Down if !self.editing => {
                             self.curr_reg = self.curr_reg.saturating_add(1);
                         }
-                        KeyCode::Char('k') if !self.editing => {
+                        KeyCode::Char('k') | KeyCode::Up if !self.editing => {
                             self.curr_reg = self.curr_reg.saturating_sub(1);
                         }
                         KeyCode::Char('+') if !self.editing => {
@@ -123,35 +154,38 @@ impl State {
                         }
                         KeyCode::Enter if self.editing => {
                             self.editing = false;
-                            self.greg.reg[self.curr_reg] =
-                                u32::from_str_radix(&self.curr_buf, 16).unwrap();
-                            self.curr_buf.clear();
+                            self.greg.reg[self.curr_reg] = self.curr_buf;
+                            self.curr_buf = 0;
                         }
                         KeyCode::Enter if !self.editing => {
                             self.editing = true;
-
-                            let curr = self.greg.reg[self.curr_reg];
-                            if curr != 0 {
-                                self.curr_buf = format!("{:x}", curr);
-                            }
+                            self.curr_buf = self.greg.reg[self.curr_reg];
                         }
                         KeyCode::Esc if self.editing => {
                             self.editing = false;
-                            self.curr_buf.clear();
+                            self.curr_buf = 0;
                         }
                         KeyCode::Backspace if self.editing => {
-                            self.curr_buf.pop();
+                            self.curr_buf /= self.display_mode.radix();
                         }
                         KeyCode::Char('n') if !self.editing => {
                             self.step();
                         }
-                        KeyCode::Char(c @ '0'..='9' | c @ 'a'..='f' | c @ 'A'..='F')
-                            if self.editing =>
+                        KeyCode::Char(c)
+                            if self.editing && c.is_digit(self.display_mode.radix()) =>
                         {
-                            if self.curr_buf.len() == 0 && c == '0' || self.curr_buf.len() >= 8 {
-                                continue;
+                            if let Some(curr_buf) =
+                                self.curr_buf.checked_mul(self.display_mode.radix())
+                            {
+                                let ls = if c.is_ascii_digit() {
+                                    (c as u8 - b'0') as u32
+                                } else {
+                                    let c = c.to_ascii_lowercase();
+                                    (c as u8 - b'a') as u32 + 10
+                                };
+
+                                self.curr_buf = curr_buf + ls;
                             }
-                            self.curr_buf.push(c.to_ascii_lowercase());
                         }
                         KeyCode::Char('q') if !self.editing => {
                             return Ok(());
@@ -185,40 +219,48 @@ impl State {
     fn draw_registers(&self, frame: &mut Frame, rect: Rect) {
         let registers = Layout::vertical([Constraint::Length(1); 32]).split(rect);
         for (i, r) in registers.iter().enumerate() {
-            let curr = self.curr_reg == i;
-            let row = Layout::horizontal([Constraint::Fill(1); 2]).split(*r);
-            let style = Style::default().fg(Color::Yellow);
+            let row = Layout::horizontal([
+                Constraint::Fill(1),
+                Constraint::Length(12),
+                Constraint::Length(5),
+            ])
+            .split(*r);
 
             frame.render_widget(Reg::from(i as u32).into_span(), row[0]);
 
-            let style = style.fg(Color::Gray).add_modifier(Modifier::ITALIC);
-            if curr {
-                let style = style.fg(Color::Black);
+            let style = Style::default()
+                .fg(Color::Black)
+                .add_modifier(Modifier::ITALIC);
+            let (style, n) = if self.curr_reg == i {
                 if self.editing {
-                    frame.render_widget(
-                        Text::styled(format!("0x{:0>8}", &self.curr_buf), style.bg(Color::Green)),
-                        row[1],
-                    );
+                    (style.bg(Color::Green), self.curr_buf)
                 } else {
-                    frame.render_widget(
-                        Text::styled(
-                            format!("0x{:08x}", self.greg.reg[i]),
-                            style.bg(Color::Magenta),
-                        ),
-                        row[1],
-                    );
+                    (style.bg(Color::Magenta), self.greg.reg[i])
                 }
             } else {
                 let style = if self.greg.reg[i] != self.prev_regs[i] {
-                    style.fg(Color::Black).bg(Color::Yellow)
+                    style.bg(Color::Yellow)
                 } else if self.greg.reg[i] == 0 {
                     style.fg(Color::DarkGray)
                 } else {
-                    style
+                    style.fg(Color::Gray)
                 };
+                (style, self.greg.reg[i])
+            };
+            frame.render_widget(
+                Text::styled(
+                    match self.display_mode {
+                        DisplayMode::Hex => format!(" 0x{:08x} ", n),
+                        DisplayMode::Dec => format!(" {:10} ", n),
+                    },
+                    style,
+                ),
+                row[1],
+            );
+            if let Some(c) = get_showable_char(n) {
                 frame.render_widget(
-                    Text::styled(format!("0x{:08x}", self.greg.reg[i]), style),
-                    row[1],
+                    Text::styled(format!(" {:?}", c), Style::default().fg(Color::Green)),
+                    row[2],
                 );
             }
         }
@@ -230,7 +272,7 @@ impl State {
             .fg(Color::Blue)
             .add_modifier(Modifier::ITALIC);
 
-        let n = rect.height as isize / 2 - 1;
+        let before = rect.height as usize / 4;
 
         let curr = self
             .decomp
@@ -242,29 +284,21 @@ impl State {
             })
             .next();
 
-        let mut idx;
-
         if let Some((curr, active)) = curr {
             let active_label = active.active_label();
 
-            idx = n.checked_sub_unsigned(curr - 1).unwrap().max(0) as usize;
-            let curr = curr as isize; // TODO: I dislike this `as isize`
-            for i in (curr - n..=curr - 1).filter(|n| *n > 0) {
-                let i = i as usize;
-                self.draw_inst(&self.decomp[i], regs[idx], frame, style, active_label);
-                idx += 1;
-            }
+            let start = curr.saturating_sub(before);
 
-            {
-                let style = style.bg(Color::Indexed(237));
-                self.draw_inst(active, regs[idx], frame, style, active_label);
-                idx += 1;
-            }
-
-            let curr = curr as usize;
-            for i in curr + 1..std::cmp::min(curr + n as usize, self.decomp.len()) {
-                self.draw_inst(&self.decomp[i], regs[idx], frame, style, active_label);
-                idx += 1;
+            for i in 0..rect.height as usize {
+                if i + start >= self.decomp.len() {
+                    break;
+                }
+                let style = if i + start == curr {
+                    style.bg(Color::Indexed(237))
+                } else {
+                    style
+                };
+                self.draw_inst(&self.decomp[i + start], regs[i], frame, style, active_label);
             }
         } else {
             todo!()
@@ -272,8 +306,12 @@ impl State {
     }
 
     fn draw_stdout(&self, frame: &mut Frame, rect: Rect) {
-        let s = self.greg.stdout.as_ref().unwrap();
-        let lines = s
+        // TODO: Fix this
+        let lines = self
+            .greg
+            .stdout
+            .as_ref()
+            .unwrap()
             .lines()
             .rev()
             .take(rect.height as usize)
