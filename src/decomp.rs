@@ -132,7 +132,7 @@ impl Decomp {
                 pos: Addr::Label(pos),
                 ..
             } => Some(pos),
-            DecompKind::Jump { .. } => todo!(),
+            DecompKind::Jump { .. } => None,
         }
     }
 }
