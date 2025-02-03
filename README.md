@@ -1,8 +1,13 @@
 # Greg
 
-Greg is a VM for the MIPS32 architecture.
+A virtual machine and debugger for the MIPS32 architecture. 
 
-![Screenshot](./img/screenshot.png)
+## TUI
+
+Greg offers a (nearly) fully-featured TUI that may be opened with the
+`--tui` flag:
+
+![GIF of TUI](./img/usage.gif)
 
 ## References
 

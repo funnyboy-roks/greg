@@ -281,6 +281,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "greg"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "defer",
+ "elf",
+ "rand",
+ "ratatui",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -390,18 +402,6 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "mips"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "defer",
- "elf",
- "rand",
- "ratatui",
 ]
 
 [[package]]

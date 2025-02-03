@@ -3,19 +3,11 @@ CFLAGS=-nostdlib -ggdb
 
 # TODO: I don't want to specify each target
 
-all: build/fib build/hello build/fib-asm build/collatz build/hello-manual build/print
+all: build/fib build/hello build/fib-asm build/collatz build/hello-manual build/print build/time
 
-build/print: print.s $(CC)
+build/%: %.s $(CC)
 	mkdir -p build
-	$(CC) $(CFLAGS) -o build/print print.s
-
-build/hello-manual: hello-manual.s $(CC)
-	mkdir -p build
-	$(CC) $(CFLAGS) -o build/hello-manual hello-manual.s
-
-build/collatz: collatz.s $(CC)
-	mkdir -p build
-	$(CC) $(CFLAGS) -o build/collatz collatz.s
+	$(CC) $(CFLAGS) -o $@ $<
 
 build/fib: greg.c fib.c $(CC)
 	mkdir -p build
@@ -24,10 +16,6 @@ build/fib: greg.c fib.c $(CC)
 build/hello: greg.c hello.c $(CC)
 	mkdir -p build
 	$(CC) $(CFLAGS) -o build/hello greg.c hello.c
-
-build/fib-asm: fib-asm.s $(CC)
-	mkdir -p build
-	$(CC) $(CFLAGS) -o build/fib-asm fib-asm.s
 
 $(CC):
 	tar -xf mips32-el.tar.xz
