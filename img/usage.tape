@@ -14,8 +14,8 @@ Show
 Ctrl+l
 
 Type "greg build/collatz --tui" Sleep 200ms  Enter
-Type " ---------"
-Sleep 5s
+Type " -------"
+Sleep 10s
 Type "q"
 
 Ctrl+l
